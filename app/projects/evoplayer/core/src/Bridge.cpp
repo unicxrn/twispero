@@ -1,0 +1,336 @@
+#include "evo_jailbreak.h"
+#include "evo/Application.hpp"
+#include "evo/Common.hpp"
+#include "evo/screens/ScreenManager.hpp"
+#include "pp_playback.h"
+#include "evo_playback.h"
+#include "evo_demux.h"
+#include "evo_audio_out.h"
+#include "evo_vdec.h"
+#include "evo_toast.h"
+#include "evo_theme.h"
+#include "evo_rmlui_bridge.h"
+
+namespace evo {
+/* Startup default; evo::Application::initialize() replaces these with what
+ * the VideoOut layer reports the panel is running at. */
+int DisplayWidth  = 1920;
+int DisplayHeight = 1080;
+}  // namespace evo
+
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <sys/time.h>
+
+// Global playback and display state
+pp_playback g_pp_pb;
+int g_ps5_user_id = 0;
+int screen = 0;
+/* Whether the VideoOut surface is registered in an HDR format. Set by main()
+ * before the AGC runtime comes up; lived in the deleted GL context stub. */
+int g_ps5_video_out_hdr = 0;
+
+int player_paused = 0;
+double media_duration_sec = 0.0;
+double resume_base_offset_seconds = 0.0;
+double requested_resume_seek_pos = 0.0;
+char current_media_path[768] = {0};
+int evo_audio_channels = 2;
+
+AVFormatContext *play_fmt = nullptr;
+AVCodecContext *audio_ctx = nullptr;
+evo_vdec *g_vdec = nullptr;
+int g_vdec_force_ffmpeg = 0;
+AVPacket *video_pending_pkt = nullptr;
+
+int perf_render_fps = 0;
+int perf_decode_fps = 0;
+int perf_render_frames = 0;
+int perf_decode_frames = 0;
+double g_gl_present_ms = 0.0;
+int show_debug_overlay = 0;
+
+int current_profile = 0;
+int playback_profile = 1;
+/*
+ * Demux read-ahead ceilings.
+ *
+ * These are the defaults for a local file, where the disk reads far faster
+ * than real time and 96 packets is already more cushion than anything needs.
+ * PlaybackController re-sizes all four for a network source, where the
+ * read-ahead has to be expressed in seconds instead.
+ *
+ * A flat packet count was the whole problem: 96 packets is 4 s at 24 fps for a
+ * 2 Mbit/s IPTV channel and 4 s for a 54 Mbit/s UHD remux, so the cushion in
+ * seconds was identical while the consequence of losing it was not. Hardware,
+ * 2026-10-02 (Avatar: Fire and Ash, 4K HEVC DV remux, 54 Mbit/s, over a debrid
+ * proxy): the queue sat at its overshoot limit for the first 40 s, then the
+ * link fell to roughly 12 Mbit/s and those 4 s were gone - 25 s at
+ * video_frames=0, then 11 fps against a 24 fps stream, while decode and the
+ * render loop both logged zero slow iterations. Nothing was slow.
+ *
+ * The byte caps keep a deeper read-ahead honest: 10 s of 54 Mbit/s is 67 MB
+ * and the flexible pool had ~144 MB free with map_fail already nonzero, so a
+ * high-bitrate source gets fewer seconds rather than more megabytes. 0 means
+ * "bound by packets only".
+ */
+int video_packet_cap = 96;
+int audio_packet_cap = 96;
+long long video_queue_byte_cap = 0;
+long long audio_queue_byte_cap = 0;
+
+/*
+ * Start-of-stream pre-buffer (live/network sources only).
+ *
+ * The packet caps above are a ceiling, not a target: the demux thread reads as
+ * fast as the source allows and only throttles once the queue is full. A
+ * source delivering at roughly real time therefore leaves the queue hovering
+ * near empty, and every network hiccup lands straight on the decoder - on
+ * hardware, IPTV channels stuttering at 11-20 fps with frame gaps up to 967 ms
+ * while decode used 0.19 ms of a 33 ms budget and the render loop logged zero
+ * slow iterations. Nothing was slow; the frames simply were not there.
+ *
+ * So hold the decode threads at open until the queue has a cushion. They park
+ * themselves on pb_prebuffer_hold exactly as they do for a seek; the demux
+ * thread clears it once the queue is deep enough, the deadline passes, or the
+ * stream ends. The frame loop keeps running throughout, which is what puts
+ * PlayerScreen's existing "BUFFERING..." on screen instead of a frozen picture.
+ *
+ * 48 packets is ~1.6 s at 30 fps, comfortably inside the 96-packet cap. The
+ * deadline is the backstop for a source too slow to ever reach that: start
+ * anyway and let it stutter rather than never starting at all.
+ */
+volatile int pb_prebuffer_hold = 0;
+int pb_prebuffer_packets = 48;
+int pb_prebuffer_max_ms = 4000;
+
+/*
+ * Mid-playback rebuffer.
+ *
+ * The hold above was armed once, at open, and there was no path back to it:
+ * when the queue later ran dry the decode threads simply took frames at
+ * whatever rate the network managed and the renderer held each one for two or
+ * three refreshes. A slow link therefore showed up as permanent slow motion
+ * with nothing on screen to say why - "held 2:61" in the pace line, every
+ * frame shown twice, for as long as the link stayed short.
+ *
+ * Re-arming the hold parks both decode threads; audio output then falls into
+ * its soft-underrun branch, which emits silence WITHOUT advancing the media
+ * clock, so the picture freezes on its last frame and both restart together
+ * once there is a cushion again. That reads as a slow connection, which is
+ * what it is. Slow motion reads as a broken player.
+ *
+ * Armed for network sources only: a local file that runs dry has a real
+ * problem, and pausing would hide it. The low-water mark is deliberately close
+ * to empty - this is the last resort before the decoder starves, not a target.
+ */
+int pb_rebuffer_enabled = 0;
+int pb_rebuffer_low_packets = 3;
+
+/*
+ * A rebuffer fills deeper, and waits longer, than the pre-buffer at open.
+ *
+ * The open deadline is short because somebody is waiting to find out whether
+ * the file plays at all, and starting with a thin cushion beats not starting.
+ * Mid-playback that trade is reversed: the viewer is already watching, the
+ * picture has stopped either way, and releasing early only means running dry
+ * again a second later. Reusing 48 packets / 4 s gave a visible stutter cycle
+ * on a short link - hold 4 s, play under a second, repeat.
+ *
+ * 96 packets is ~4 s at 24 fps, clamped to the queue cap by prebuffer_check().
+ * The 8 s deadline is the backstop for a link that will never reach it: play
+ * what arrived rather than freeze for good.
+ */
+int pb_rebuffer_packets = 96;
+int pb_rebuffer_max_ms = 8000;
+
+/*
+ * Scrub hold: the media pipeline is parked for as long as the seek bar is
+ * being dragged, and released by the commit (or the cancel) at the end.
+ *
+ * Scrubbing used to pause only the presentation clock. The decode threads
+ * carried on running forward from the OLD position, which bought nothing -
+ * every frame they produced was thrown away by the paused clock - and cost
+ * three things: the decoder chewed through the file in the background, the
+ * audio clock kept advancing against a picture that was standing still (so
+ * the two cross-throttles in evo_playback.c and evo_audio_out.c spent the
+ * whole scrub fighting each other), and the renderer's borrowed pointers into
+ * the decoder's frame pool were overwritten under it.
+ *
+ * Parking the whole pipeline instead makes a scrub what it looks like: the
+ * picture is frozen on the snapshot pp_playback_pause() took, nothing decodes,
+ * and both clocks restart cleanly from the seek target on commit.
+ *
+ * The demux thread is deliberately NOT gated on this. It keeps reading until
+ * both packet queues are full and then parks on its own queue-full wait, so a
+ * short scrub is covered by packets already in hand; a committed seek clears
+ * the queues anyway. demux_wait_for_room() only releases when the OTHER queue
+ * is starving, and with both decoders parked neither is, so it simply waits.
+ */
+volatile int pb_scrub_hold = 0;
+int decoder_thread_count = 4;
+int video_view_mode = 1;
+long long controls_last_used_ms = 0;
+
+int dbg_read_fail = 0;
+int dbg_video_packets = 0;
+int dbg_video_frames = 0;
+int dbg_video_thread_alive = 0;
+int dbg_swaps = 0;
+long long dbg_last_pts = 0;
+int g_first_frame_bc_done = 0;
+struct SwsContext *play_sws = nullptr;
+
+pp_aspect_mode prospero_view_mode_to_aspect(void) {
+    if (video_view_mode == 1)
+        return PP_ASPECT_FILL;
+    if (video_view_mode == 2)
+        return PP_ASPECT_STRETCH;
+    return PP_ASPECT_FIT;
+}
+
+int prospero_get_initial_user_id(void) {
+    return g_ps5_user_id;
+}
+
+
+long long now_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (long long)tv.tv_sec * 1000LL + (tv.tv_usec / 1000);
+}
+
+long long perf_now_ms(void) {
+    return now_ms();
+}
+
+void clean_media_title(const char *path, char *line1, size_t line1_sz, char *line2, size_t line2_sz) {
+    if (!path) return;
+    std::string title, cat;
+    if (auto meta = evo::Application::getInstance().getMediaMetadataService()) {
+        meta->cleanMediaTitle(path, title, cat);
+    }
+    if (line1 && line1_sz > 0) {
+        snprintf(line1, line1_sz, "%s", title.c_str());
+    }
+    if (line2 && line2_sz > 0) {
+        snprintf(line2, line2_sz, "%s", cat.c_str());
+    }
+}
+
+
+double prospero_player_position(void) {
+    return resume_base_offset_seconds + prospero_media_clock_seconds();
+}
+
+double evo_player_position_s(void) {
+    return prospero_player_position();
+}
+
+/* Non-zero on success. */
+int start_video_playback(const char *path) {
+    if (auto pb = evo::Application::getInstance().getPlaybackController()) {
+        return pb->startPlayback(path ? path : "", 0.0) ? 1 : 0;
+    }
+    return 0;
+}
+
+void stop_video_playback(void) {
+    if (auto pb = evo::Application::getInstance().getPlaybackController()) {
+        pb->stopPlayback();
+    }
+}
+
+/*
+ * The dev remote's two entry points (evo_usb_remote.c). Both mirror what a
+ * controller does, NOT just the playback call underneath it - the legacy
+ * main.c versions pushed the player screen on open and returned to the browser
+ * on stop, and the C++ shims that replaced them kept only the
+ * start/stop_video_playback() half.
+ *
+ * The consequence was invisible off-console and total on it: `evo-remote.sh
+ * play` opened and demuxed the file (evo_status showed a real dur=) while EVO
+ * sat on whatever screen it was already on, so nothing ever appeared, pos
+ * never advanced and every clip in a sweep recorded as stalled.
+ */
+void evo_stop_media_playback(void) {
+    stop_video_playback();
+    if (auto sm = evo::Application::getInstance().getScreenManager()) {
+        const evo::ScreenId cur = sm->getCurrentScreenId();
+        /* Back where the stream was started from, as leaving the player with
+         * the pad does (TwitchHome when there is nowhere else). */
+        if (cur == evo::ScreenId::Player)
+            sm->returnFromPlayback();
+    }
+}
+
+/* Direct navigation for the dev remote: go straight to a screen instead of
+ * guessing the key presses that would get there. An id with no screen behind
+ * it (a removed one, a typo) is refused: navigating there would leave the app
+ * on a screen nothing draws. 0 (MainMenu) is fine, navigateTo() sends it to
+ * TwitchHome. */
+int evo_remote_goto_screen(int screen_id) {
+    auto sm = evo::Application::getInstance().getScreenManager();
+    if (!sm)
+        return 0;
+    const auto id = static_cast<evo::ScreenId>(screen_id);
+    if (id != evo::ScreenId::MainMenu && !sm->getScreen(id))
+        return 0;
+    sm->navigateTo(id);
+    return 1;
+}
+
+void evo_open_media_path(const char *path) {
+    if (!path || !path[0])
+        return;
+    /* Start, then show the player. */
+    start_video_playback(path);
+    if (auto sm = evo::Application::getInstance().getScreenManager())
+        sm->navigateTo(evo::ScreenId::Player);
+}
+
+void evo_sfx_play(int kind) {
+    if (auto sfx = evo::Application::getInstance().getSoundEffectEngine()) {
+        sfx->playSound(static_cast<evo::SoundEffect>(kind));
+    }
+}
+
+/* The DEBUG OVERLAY setting drives both FPS readouts: the player pill during
+ * playback and the rail pill everywhere else. It used to drive neither -
+ * show_debug_overlay was never assigned and the debug document's update entry
+ * point was never called, so the setting was a dead end.
+ *
+ * Dev builds only (--usb-remote), like the Settings row. A release build keeps
+ * both pills off, even when an older settings file has the setting on. */
+int evo_fps_counter_enabled(void) {
+#if defined(EVO_USB_REMOTE)
+    if (auto s = evo::Application::getInstance().getSettingsService())
+        return s->isDebugOverlayEnabled() ? 1 : 0;
+#endif
+    return 0;
+}
+
+void evo_sync_rmlui_nav(int section, int rail_focused, int rail_index, int visible) {
+    if (!evo_rmlui_is_initialized()) return;
+    evo_rmlui_nav_params_t nav;
+    nav.active_section = section;
+    nav.rail_focused   = rail_focused;
+    nav.cursor_index   = rail_focused ? rail_index : section;
+    nav.visible        = visible;
+    nav.fps            = perf_render_fps;
+    nav.show_fps       = evo_fps_counter_enabled();
+    /* Read here rather than threaded through evo_sync_rmlui_nav's signature and
+     * every caller: the banner is a property of the process, not of whichever
+     * screen happens to be syncing the rail. Stubs to "open" off-device. */
+    nav.storage_locked = evo_jailbreak_is_open() ? 0 : 1;
+    evo_rmlui_update_nav(&nav);
+}
+
+void draw_video_frame_to_fb(uint32_t *fb, int x, int y, int max_w, int max_h) {
+    (void)x; (void)y; (void)max_w; (void)max_h;
+    // When GL quad is active, drawing to fb is bypassed or handled via GL quad blit
+    if (!fb) return;
+}
+
+} // extern "C"

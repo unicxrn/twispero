@@ -1,0 +1,25 @@
+name: Feature request
+description: Something you'd like Twispero to do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Some things can't be done by an app outside Twitch, such as claiming channel points or following a channel. The README's "What it can't do" section has the list.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: What should the app do, and where would you use it?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What are you trying to do that doesn't work today?
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else
+      description: Other apps that do it well, a sketch, or a screenshot.

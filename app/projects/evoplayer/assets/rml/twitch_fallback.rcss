@@ -1,0 +1,97 @@
+/* =============================================================================
+ * twitch_fallback.rml - the page the Twitch screens show when the UI kit could
+ * not start. Plain on purpose: it only has to say what happened and let the
+ * user get out. EvoRmlApp::RenderTwitchFallback repaints the colours from the
+ * active theme and marks the focused button.
+ * ============================================================================= */
+
+body {
+    font-family: LatoLatin;
+    font-weight: normal;
+    font-size: 16dp;
+    color: #efeff1;
+    background-color: #070708;
+    decorator: vertical-gradient(#0e0e10 #070708);
+    margin: 0;
+    padding: 0;
+    width: 1920dp;
+    height: 1080dp;
+    overflow: hidden;
+    position: relative;
+}
+
+div, span {
+    box-sizing: border-box;
+}
+
+/* Left-aligned on the Twitch screens' content edge, a little above the
+ * middle of the screen. */
+#fb-content {
+    position: absolute;
+    left: 192dp;
+    top: 300dp;
+    width: 1100dp;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+#fb-mark {
+    width: 96dp;
+    height: 96dp;
+    margin-bottom: 24dp;
+}
+
+#fb-app {
+    font-size: 22dp;
+    font-weight: bold;
+    letter-spacing: 2dp;
+    color: #bf94ff;
+    margin-bottom: 12dp;
+}
+
+#fb-title {
+    font-size: 52dp;
+    font-weight: bold;
+    color: #efeff1;
+    margin-bottom: 20dp;
+}
+
+#fb-message {
+    width: 900dp;
+    font-size: 26dp;
+    line-height: 38dp;
+    color: #adadb8;
+    margin-bottom: 48dp;
+}
+
+#fb-buttons {
+    display: flex;
+    flex-direction: row;
+    gap: 20dp;
+}
+
+.fb-btn {
+    height: 64dp;
+    padding-left: 36dp;
+    padding-right: 36dp;
+    border-radius: 32dp;
+    border-width: 2dp;
+    border-color: transparent;
+    background-color: #ffffff1f;
+    color: #efeff1;
+    font-size: 24dp;
+    font-weight: bold;
+    letter-spacing: 1dp;
+    /* block + line-height centres the label (see closed.rcss) */
+    display: block;
+    line-height: 60dp;
+    text-align: center;
+}
+
+/* The focused button: white with dark ink, as the kit's Watch live. */
+.fb-btn-focused {
+    background-color: #ffffff;
+    color: #0e0e10;
+    border-color: #9146ff;
+}

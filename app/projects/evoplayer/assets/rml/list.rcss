@@ -1,0 +1,592 @@
+/* =============================================================================
+ * EVO PLAYER PRO - Generic scrolling list screen
+ *
+ * RECENT, FAVORITES, EMBY SETUP and EMBY BROWSE. All four are evo_list_model
+ * in the immediate-mode UI, so they share one document here rather than four
+ * near-identical ones. Geometry and type follow settings.rcss so a user
+ * moving between sections sees one interface, not four.
+ * ============================================================================= */
+
+body {
+    font-family: LatoLatin;
+    font-weight: normal;
+    font-size: 16dp;
+    color: #ffffff;
+    background-color: #06090e;
+    margin: 0;
+    padding: 0;
+    width: 1920dp;
+    height: 1080dp;
+    overflow: hidden;
+    position: relative;
+}
+
+div, span, p {
+    box-sizing: border-box;
+}
+
+/* Content pane at EVO_CONTENT_X, clear of the rail by the native 44 px. */
+#list-pane {
+    position: absolute;
+    left: 152dp;
+    top: 0;
+    width: 1768dp;
+    height: 1080dp;
+}
+
+/* =============================== Header =============================== */
+
+#list-header {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 72dp;
+    margin-bottom: 36dp;
+    width: 1704dp;
+    height: 88dp;
+}
+
+#list-header-left {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+
+#list-indicator {
+    width: 4dp;
+    height: 52dp;
+    background-color: #00cdff;
+    border-radius: 2dp;
+    margin-right: 18dp;
+}
+
+#list-header-titles {
+    display: flex;
+    flex-direction: column;
+}
+
+#list-title {
+    font-size: 32dp;
+    font-weight: bold;
+    color: #ffffff;
+    letter-spacing: 2dp;
+}
+
+#list-subtitle {
+    font-size: 14dp;
+    font-weight: bold;
+    color: #a3b6d0;
+    letter-spacing: 1.5dp;
+    margin-top: 5dp;
+}
+
+#list-counter {
+    font-size: 13dp;
+    font-weight: bold;
+    color: #5e718c;
+    letter-spacing: 2dp;
+    background-color: #1420368c;
+    border-width: 1dp;
+    border-color: #5a7db433;
+    border-radius: 10dp;
+    padding: 8dp 18dp;
+}
+
+/* ================================ Rows ================================ */
+
+#list-rows {
+    display: flex;
+    flex-direction: column;
+    width: 1704dp;
+}
+
+.list-row {
+    width: 1704dp;
+    height: 84dp;
+    background-color: #101a2ceb;
+    border-width: 1dp;
+    border-color: #5a7db429;
+    border-radius: 16dp;
+    margin-bottom: 12dp;
+    padding-left: 24dp;
+    padding-right: 24dp;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    transition: transform 0.18s cubic-out, border-color 0.18s cubic-out, background-color 0.18s cubic-out;
+}
+
+.list-row-focused {
+    background-color: #16223af5;
+    border-width: 1.5dp;
+    border-color: #ffcd00;
+    transform: scale(1.012);
+}
+
+.lrow-left {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+
+.lrow-icon-box {
+    width: 52dp;
+    height: 52dp;
+    background-color: #00cdff14;
+    border-width: 1dp;
+    border-color: #00cdff33;
+    border-radius: 14dp;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 18dp;
+    transition: background-color 0.18s cubic-out, border-color 0.18s cubic-out;
+}
+
+.list-row-focused .lrow-icon-box {
+    background-color: #ffcd001f;
+    border-color: #ffcd0073;
+}
+
+.lrow-icon {
+    width: 26dp;
+    height: 26dp;
+    display: inline-block;
+}
+
+.lrow-text {
+    display: flex;
+    flex-direction: column;
+    width: 1384dp;
+}
+
+.lrow-title {
+    display: block;
+    font-size: 22dp;
+    font-weight: bold;
+    color: #eef4ff;
+    letter-spacing: 0.4dp;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.lrow-detail {
+    display: block;
+    font-size: 13.5dp;
+    font-weight: bold;
+    color: #5e718c;
+    letter-spacing: 0.6dp;
+    margin-top: 4dp;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.list-row-focused .lrow-detail {
+    color: #ffcd00;
+}
+
+/* Resume position, for RECENT. Sits under the detail line rather than beside
+ * it, so a long filename never has to share the row with it. */
+.lrow-track {
+    display: block;
+    width: 460dp;
+    height: 4dp;
+    border-radius: 2dp;
+    background-color: #7896c838;
+    margin-top: 6dp;
+}
+
+.lrow-fill {
+    display: block;
+    width: 0%;
+    height: 4dp;
+    border-radius: 2dp;
+    background-color: #ffcd00;
+}
+
+.lrow-right {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+
+.lrow-badge {
+    background-color: #0a101c99;
+    border-width: 1dp;
+    border-color: #5a7db433;
+    border-radius: 10dp;
+    padding: 7dp 18dp;
+    font-size: 13dp;
+    font-weight: bold;
+    color: #7c8ba3;
+    letter-spacing: 1.4dp;
+    margin-right: 16dp;
+}
+
+.list-row-focused .lrow-badge {
+    background-color: #ffcd0029;
+    border-color: #ffcd00;
+    color: #ffcd00;
+}
+
+.lrow-chevron {
+    width: 20dp;
+    height: 20dp;
+    display: inline-block;
+}
+
+/* ============================= Empty state ============================= */
+
+#list-empty {
+    display: none;
+    position: absolute;
+    left: 0;
+    top: 300dp;
+    width: 1704dp;
+    flex-direction: column;
+    align-items: center;
+}
+
+#list-empty-icon-box {
+    width: 128dp;
+    height: 128dp;
+    border-radius: 64dp;
+    background-color: #121b2eeb;
+    border-width: 1dp;
+    border-color: #2a3b55aa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 26dp;
+}
+
+#list-empty-icon {
+    width: 56dp;
+    height: 56dp;
+    display: inline-block;
+}
+
+#list-empty-title {
+    display: block;
+    font-size: 33dp;
+    font-weight: bold;
+    color: #ecf3ff;
+    letter-spacing: 1dp;
+}
+
+#list-empty-hint {
+    display: block;
+    font-size: 18dp;
+    font-weight: bold;
+    color: #5e718c;
+    letter-spacing: 1dp;
+    margin-top: 12dp;
+}
+
+/* =============================== Footer =============================== */
+
+#list-footer {
+    position: absolute;
+    bottom: 40dp;
+    left: 0;
+    width: 1704dp;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 32dp;
+}
+
+.footer-hint {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10dp;
+}
+
+.footer-glyph {
+    width: 26dp;
+    height: 26dp;
+    display: inline-block;
+}
+
+.glyph-badge {
+    width: 38dp;
+    height: 38dp;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 19dp;
+    background-color: #14223ab8;
+    border-width: 1dp;
+    border-color: #7896c838;
+}
+
+.glyph-badge-img {
+    width: 24dp;
+    height: 24dp;
+}
+
+.footer-text {
+    font-size: 14dp;
+    font-weight: bold;
+    color: #8b99ad;
+    letter-spacing: 1.8dp;
+}
+
+#list-footer-version {
+    margin-left: auto;
+    font-size: 14dp;
+    font-weight: bold;
+    color: #8b99ad;
+    letter-spacing: 1dp;
+}
+
+/* ============ OPTIONS menu (copied from EVO's old file browser) ============ */
+
+#list-menu-scrim {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1920dp;
+    height: 1080dp;
+    background-color: #06090ee8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+#list-menu-card {
+    width: 580dp;
+    border-radius: 20dp;
+    background-color: #0c1424fc;
+    border-width: 1.5dp;
+    border-color: #1e304d;
+    padding: 26dp 28dp;
+    display: flex;
+    flex-direction: column;
+    gap: 12dp;
+}
+
+#list-menu-header {
+    display: flex;
+    flex-direction: column;
+    gap: 10dp;
+    border-bottom-width: 1dp;
+    border-bottom-color: #1e304d;
+    padding-bottom: 14dp;
+}
+
+.action-header-badge {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8dp;
+}
+
+.action-indicator {
+    width: 4dp;
+    height: 14dp;
+    background-color: #00cdff;
+    border-radius: 2dp;
+}
+
+#list-menu-eyebrow {
+    font-size: 13dp;
+    font-weight: bold;
+    color: #00cdff;
+    letter-spacing: 2dp;
+}
+
+#list-menu-target {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12dp;
+    background-color: #101c30;
+    border-width: 1dp;
+    border-color: #1f3554;
+    border-radius: 12dp;
+    padding: 10dp 14dp;
+}
+
+.action-target-icon {
+    width: 24dp;
+    height: 24dp;
+}
+
+.action-target-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2dp;
+    flex: 1;
+    overflow: hidden;
+}
+
+.action-target-title {
+    font-size: 16dp;
+    font-weight: bold;
+    color: #ffffff;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.action-target-sub {
+    font-size: 12dp;
+    color: #7e97b8;
+}
+
+.action-clip-badge {
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 8dp;
+    background-color: #0d2847;
+    border-width: 1dp;
+    border-color: #00cdff66;
+    border-radius: 8dp;
+    padding: 6dp 12dp;
+}
+
+.action-clip-icon {
+    width: 16dp;
+    height: 16dp;
+}
+
+.action-clip-text {
+    font-size: 12dp;
+    font-weight: bold;
+    color: #00cdff;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+#list-menu-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6dp;
+}
+
+.action-row {
+    height: 48dp;
+    border-radius: 12dp;
+    background-color: #101a2b;
+    border-width: 1.5dp;
+    border-color: #1a2a42;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 14dp;
+    gap: 12dp;
+}
+
+.action-row-focused {
+    background-color: #0d2545;
+    border-color: #00cdff;
+    border-width: 2dp;
+}
+
+.action-row-focused.action-row-danger-slot {
+    background-color: #381216;
+    border-color: #ff5a4f;
+    border-width: 2dp;
+}
+
+.action-row-disabled {
+    opacity: 0.35;
+}
+
+.act-icon-box {
+    width: 32dp;
+    height: 32dp;
+    border-radius: 8dp;
+    background-color: #16243a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.action-row-focused .act-icon-box {
+    background-color: #00cdff33;
+}
+
+.action-row-focused.action-row-danger-slot .act-icon-box {
+    background-color: #ff5a4f33;
+}
+
+.act-icon-img {
+    width: 18dp;
+    height: 18dp;
+}
+
+.act-text-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2dp;
+    flex: 1;
+}
+
+.act-label {
+    font-size: 14.5dp;
+    font-weight: bold;
+    color: #e2e8f0;
+}
+
+.action-row-focused .act-label {
+    color: #ffffff;
+}
+
+.action-row-focused.action-row-danger-slot .act-label {
+    color: #ff8882;
+}
+
+.act-desc {
+    font-size: 11dp;
+    color: #6b82a6;
+}
+
+.action-row-focused .act-desc {
+    color: #b0c9ec;
+}
+
+.action-row-focused.action-row-danger-slot .act-desc {
+    color: #fca5a5;
+}
+
+.act-glyph-badge {
+    width: 24dp;
+    height: 24dp;
+    border-radius: 12dp;
+    background-color: #16243a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.act-glyph-img {
+    width: 16dp;
+    height: 16dp;
+}
+
+#list-menu-footer {
+    display: flex;
+    flex-direction: row;
+    gap: 20dp;
+    margin-top: 6dp;
+    justify-content: flex-end;
+}
+
+.act-label-danger {
+    color: #ff8882;
+}
+
+.act-icon-danger {
+    background-color: #ff5a4f22;
+}
+

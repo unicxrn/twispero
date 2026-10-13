@@ -1,0 +1,60 @@
+# Local settings. .env holds your console's address; copy .env.example.
+.env
+.env.local
+
+# Everything the build writes: the app folder, the release zip, logs, and the
+# dav1d sources build-dav1d.sh unpacks.
+output/
+/build/
+/dist/
+
+# Dependencies the build fetches and caches (zlib for the host converter,
+# MkPFS for --ffpfsc).
+.deps/
+
+# Generated on every build
+tools/native-app/runtime/libc.prx
+projects/evoplayer/include/evo_build_id.h
+projects/evoplayer/include/evo_identity.h
+projects/evoplayer/include/evo_autoplay.h
+projects/evoplayer/addons/src/evo_ca_bundle.c
+projects/evoplayer/addons/src/evo_ca_bundle.c.tmp
+projects/evoplayer/ui_rml/src/evo_rmlui_bundle_data.cpp
+projects/evoplayer/twitch/obj/
+projects/evoplayer/ui_kit/obj/
+projects/evoplayer/artifacts/
+
+# FFmpeg: the tarball is committed, the tree build-ffmpeg.sh unpacks is not
+third_party/ffmpeg/ffmpeg-*/
+third_party/ffmpeg/*.part
+
+# Objects and binaries
+*.o
+*.d
+*.a
+*.so
+*.so.*
+*.elf
+*.prx
+compile_commands.json
+.cache/
+__pycache__/
+*.pyc
+
+# Sony material and keys never belong here
+proprietary/
+*.sprx
+*.self
+*.pkg
+*.pup
+*.sfo
+*.key
+*.pem
+*.p12
+
+# Editors and operating systems
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

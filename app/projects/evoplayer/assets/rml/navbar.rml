@@ -1,0 +1,138 @@
+<rml>
+<head>
+    <link type="text/rcss" href="navbar.rcss"/>
+</head>
+<body id="navbar-body">
+    <!-- ================================================================
+         Collapsed rail (always visible when nav is shown)
+         ================================================================ -->
+    <div id="nav-rail-bg"></div>
+
+    <!--
+      Menu FPS pill. Deliberately in the MAIN context alongside the rail rather
+      than in debug.rml: that document lives in a second Rml::Context, which is
+      what crashed the plain .ffpfsc build in #75. Mirrors #fps-pill in
+      playback.rml, which covers the player.
+    -->
+    <div id="nav-fps-pill"><span id="nav-fps-value">0 FPS</span></div>
+
+    <!--
+      Elevated-privileges banner. Lives here rather than on each screen because
+      the nav overlay is the one document present across all of them, and this
+      is a condition rather than an event - it stays until the sandbox opens,
+      so it must not be a toast that fades while the app is still unusable.
+    -->
+    <div id="nav-privilege-banner">
+        <span id="nav-privilege-title">ELEVATED PRIVILEGES NEEDED</span>
+        <span id="nav-privilege-hint">Start the jailbreak payload (Lapy JB or etaHEN), then start the app again</span>
+    </div>
+
+    <!-- The app's mark: the "twi" tile, as on the kit's rail -->
+    <div id="nav-logo">
+        <img id="nav-logo-img" src="../icons/icon_app_small.png"/>
+    </div>
+
+    <!--
+      Icon-only collapsed items: the kit rail's five sections (ScreenManager's
+      sections 0..4). The kit draws its own rail; this one shows only on the
+      RmlUi screens, which the app falls back to when the kit cannot start.
+    -->
+    <div id="nav-items">
+        <!-- 0: HOME -->
+        <div class="rail-item-wrap" id="nav-wrap-0">
+            <div class="rail-accent-bar" id="nav-bar-0"></div>
+            <div class="rail-item" id="nav-item-0">
+                <img src="../icons/icon_home.png" class="rail-icon" id="nav-icon-0"/>
+            </div>
+        </div>
+        <!-- 1: FOLLOWING -->
+        <div class="rail-item-wrap" id="nav-wrap-1">
+            <div class="rail-accent-bar" id="nav-bar-1"></div>
+            <div class="rail-item" id="nav-item-1">
+                <img src="../icons/icon_heart.png" class="rail-icon" id="nav-icon-1"/>
+            </div>
+        </div>
+        <!-- 2: BROWSE -->
+        <div class="rail-item-wrap" id="nav-wrap-2">
+            <div class="rail-accent-bar" id="nav-bar-2"></div>
+            <div class="rail-item" id="nav-item-2">
+                <img src="../icons/icon_grid.png" class="rail-icon" id="nav-icon-2"/>
+            </div>
+        </div>
+        <!-- 3: SEARCH -->
+        <div class="rail-item-wrap" id="nav-wrap-3">
+            <div class="rail-accent-bar" id="nav-bar-3"></div>
+            <div class="rail-item" id="nav-item-3">
+                <img src="../icons/icon_search.png" class="rail-icon" id="nav-icon-3"/>
+            </div>
+        </div>
+        <!-- 4: SETTINGS -->
+        <div class="rail-item-wrap" id="nav-wrap-4">
+            <div class="rail-accent-bar" id="nav-bar-4"></div>
+            <div class="rail-item" id="nav-item-4">
+                <img src="../icons/icon_settings.png" class="rail-icon" id="nav-icon-4"/>
+            </div>
+        </div>
+    </div>
+
+    <!--
+      QUIT. An action, not a section: it releases everything and parks the
+      app on the safe-to-close screen (Application::requestSoftClose), so it is
+      pinned to the foot of the rail, apart from the places you can go. Slot 5
+      in both panels, the index after the last section, which is how
+      ScreenManager knows this entry.
+    -->
+    <div id="nav-quit">
+        <div class="rail-item-wrap" id="nav-wrap-5">
+            <div class="rail-accent-bar" id="nav-bar-5"></div>
+            <div class="rail-item" id="nav-item-5">
+                <img src="../icons/icon_power.png" class="rail-icon" id="nav-icon-5"/>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================================
+         Expanded overlay (shown when rail_focused = true)
+         ================================================================ -->
+    <div id="nav-scrim"></div>
+    <div id="nav-expanded">
+        <!-- Logo + app name -->
+        <div id="nav-expanded-logo">
+            <img id="nav-expanded-logo-img" src="../icons/icon_app_small.png"/>
+        </div>
+        <div id="nav-app-label"></div>  <!-- the app's name, from sce_sys/param.json -->
+
+        <!-- Labelled items -->
+        <div id="nav-expanded-items">
+            <div class="rail-exp-item" id="nav-exp-0">
+                <img id="nav-exp-icon-0" src="../icons/icon_home.png" class="rail-exp-icon"/>
+                <span class="rail-exp-label" id="nav-exp-label-0">HOME</span>
+            </div>
+            <div class="rail-exp-item" id="nav-exp-1">
+                <img id="nav-exp-icon-1" src="../icons/icon_heart.png" class="rail-exp-icon"/>
+                <span class="rail-exp-label" id="nav-exp-label-1">FOLLOWING</span>
+            </div>
+            <div class="rail-exp-item" id="nav-exp-2">
+                <img id="nav-exp-icon-2" src="../icons/icon_grid.png" class="rail-exp-icon"/>
+                <span class="rail-exp-label" id="nav-exp-label-2">BROWSE</span>
+            </div>
+            <div class="rail-exp-item" id="nav-exp-3">
+                <img id="nav-exp-icon-3" src="../icons/icon_search.png" class="rail-exp-icon"/>
+                <span class="rail-exp-label" id="nav-exp-label-3">SEARCH</span>
+            </div>
+            <div class="rail-exp-item" id="nav-exp-4">
+                <img id="nav-exp-icon-4" src="../icons/icon_settings.png" class="rail-exp-icon"/>
+                <span class="rail-exp-label" id="nav-exp-label-4">SETTINGS</span>
+            </div>
+        </div>
+
+        <!-- QUIT, pinned to the foot of the panel like the rail entry -->
+        <div id="nav-expanded-quit">
+            <div class="rail-exp-item" id="nav-exp-5">
+                <img id="nav-exp-icon-5" src="../icons/icon_power.png" class="rail-exp-icon"/>
+                <span class="rail-exp-label" id="nav-exp-label-5">QUIT</span>
+            </div>
+        </div>
+    </div>
+</body>
+</rml>

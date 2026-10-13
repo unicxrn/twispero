@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in Twispero doesn't work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Please check the open issues first, in case someone already reported it.
+  - type: input
+    id: version
+    attributes:
+      label: Twispero version
+      description: Settings > System > About shows the version and the build, for example "1.0.0" and "3f2a91c4_1013-1830".
+      placeholder: 1.0.0, build 3f2a91c4_1013-1830
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: PS5 firmware
+      placeholder: "13.60"
+    validations:
+      required: true
+  - type: input
+    id: jailbreak
+    attributes:
+      label: HEN and ShadowMount+ versions
+      description: Which etaHEN (or other HEN) and which ShadowMount+ you run.
+      placeholder: etaHEN 2.x, ShadowMount+ 1.7
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: The steps, starting from opening the app. Name the channel or video if it only happens with one.
+      placeholder: |
+        1. Open a live channel
+        2. Press R1 twice
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log (optional)
+      description: |
+        With a USB stick in the console, the app writes its log to /mnt/usb0/evo.log. The lines around the problem help a lot. The log leaves out your login tokens and the chat messages you send, but read it before you paste it.
+      render: text

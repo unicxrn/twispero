@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""
+tools/evo_lifecycle.py - where PPSA99039 is in its lifecycle, from evidence.
+
+Used by tools/evo-remote.sh (launch/quit/close/cycle) and scripts/deploy-app.sh.
+Two sources, both read over FTP:
+
+  /data/shadowmount/debug.log   ShadowMount+'s own lifecycle record:
+        NOTIFY: installed game <TID>                 registered (first time)
+        [LINK] mount.lnk created: /user/app/<TID>/   (re)mounted (v1.6)
+        [SHELLCORE] launch mount ready: <TID>        mounted for a launch (v1.7)
+        [IMG][LVD] unmount complete: source=/data/homebrew/<TID>.ffpfsc
+                                                     updated image verified (v1.7:
+                                                     it test-mounts, then unmounts,
+                                                     and does NOT auto-launch)
+        [GAME] started: <TID>                        launched
+        [LINK] runtime layers released: <TID>        process gone, slot free
+  /mnt/usb0/evo_status          EVO's own heartbeat (--usb-remote builds):
+        t=<s> advancing                              running right now
+        parked=1                                     soft-closed, GPU drained
+
+Subcommands (print one word / line, exit 0 unless the FTP read failed):
+
+  slot                     FREE | RESIDENT | UNKNOWN    (ShadowMount only)
+  coldboot                 COLDBOOT | NO   (booted, and the title never ran
+                           since - the only sound reading of an UNKNOWN slot)
+  heartbeat                RUNNING | PARKED | STILL | ABSENT
+  smlen                    current debug.log length, a baseline for wait-*
+  wait-registered  BASE S  REGISTERED | TIMEOUT   (new install/mount.lnk after BASE)
+  wait-started     BASE S  STARTED | TIMEOUT
+  wait-released    BASE S  RELEASED | TIMEOUT
+  wait-parked      S       PARKED | TIMEOUT
+  wait-quiet  Q MAX        QUIET | TIMEOUT   (debug.log grew by nothing for Q s)
+  smslice BASE            the debug.log lines after BASE that mention the title
+
+Env: PS5_HOST, FTP_PORT (2121), TITLE_ID (default: the titleId in sce_sys/param.json).
+"""
+import json
+import os
+import sys
+import time
+from ftplib import FTP, error_perm
+
+HOST = os.environ["PS5_HOST"]
+PORT = int(os.environ.get("FTP_PORT", "2121"))
+
+
+def _param_title_id() -> str:
+    """The titleId in sce_sys/param.json, the one place it is set."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "projects", "evoplayer", "sce_sys", "param.json")) as f:
+        return json.load(f)["titleId"]
+
+
+TID = os.environ.get("TITLE_ID") or _param_title_id()
+SM_LOG = "/data/shadowmount/debug.log"
+SM_LOG_OLD = SM_LOG + ".1"      # ShadowMount rotates at ~16 KB
+STATUS = "/mnt/usb0/evo_status"
+
+STARTED = f"[GAME] started: {TID}"
+RELEASED = f"[LINK] runtime layers released: {TID}"
+INSTALLED = f"NOTIFY: installed game {TID}"
+MOUNTED = f"[LINK] mount.lnk created: /user/app/{TID}/mount.lnk"
+MOUNT_READY = f"[SHELLCORE] launch mount ready: {TID}"
+IMAGE_CHECKED = f"unmount complete: source=/data/homebrew/{TID}.ffpfsc"
+
+# ShadowMount writes these once, as it comes up. Finding one means the log
+# still holds the whole of this boot, so "no [GAME] started since" is evidence
+# and not just an absence - see coldboot().
+BOOT_BANNERS = ("[GAME] lifecycle watcher started",
+                "[STARTUP] scanner startup sync begin")
+
+
+def fetch(path, tries=3):
+    """File text, None if it does not exist. Raises once every try failed:
+    one slow FTP read must not be taken for a verdict."""
+    for i in range(tries):
+        try:
+            return _fetch_once(path)
+        except Exception:
+            if i == tries - 1:
+                raise
+            time.sleep(2)
+
+
+def _fetch_once(path):
+    with FTP() as f:
+        f.connect(HOST, PORT, timeout=15)
+        f.login()
+        try:
+            f.set_pasv(True)
+        except Exception:
+            pass
+        buf = []
+        try:
+            f.retrbinary("RETR " + path, buf.append)
+        except error_perm:
+            return None
+        return b"".join(buf).decode("utf-8", "replace")
+
+
+def sm_text():
+    t = fetch(SM_LOG)
+    if t is None:
+        raise RuntimeError(f"no {SM_LOG}")
+    return t
+
+
+def sm_delta(base):
+    """Everything logged since `base` bytes, across one rotation: a log
+    shorter than its baseline was rotated, and its old tail is in .1."""
+    cur = sm_text()
+    if len(cur) >= base:
+        return cur[base:]
+    old = fetch(SM_LOG_OLD) or ""
+    return old[base:] + cur
+
+
+def sm_both():
+    """The rotated log then the live one - a restart or a rotation can leave
+    the title's last lifecycle lines only in .1."""
+    return (fetch(SM_LOG_OLD) or "") + "\n" + sm_text()
+
+
+def slot(text):
+    s, r = text.rfind(STARTED), text.rfind(RELEASED)
+    if s < 0:
+        return "FREE" if r >= 0 else "UNKNOWN"
+    return "FREE" if r > s else "RESIDENT"
+
+
+def coldboot(text):
+    """COLDBOOT when the console has booted and never launched the title.
+
+    slot() cannot tell "nothing has run" from "the log does not go back far
+    enough", so it says UNKNOWN for both and the callers refuse - which on a
+    cold boot deadlocks: the slot stays UNKNOWN until a launch, and nothing
+    will launch while it is UNKNOWN.
+
+    This settles it from evidence rather than from an absence. ShadowMount
+    writes a startup banner as it comes up; everything after the LAST banner is
+    this boot. If the title has neither started nor been released in that
+    stretch, it has not run since the console came up, so the app slot is free.
+    No banner means the log has rotated past the boot and nothing is proven.
+    """
+    at = max(text.rfind(b) for b in BOOT_BANNERS)
+    if at < 0:
+        return "NO"
+    boot = text[at:]
+    return "NO" if (STARTED in boot or RELEASED in boot) else "COLDBOOT"
+
+
+def status_fields():
+    t = fetch(STATUS)
+    if not t:
+        return None
+    return dict(tok.split("=", 1) for tok in t.split() if "=" in tok)
+
+
+def heartbeat():
+    a = status_fields()
+    if a is None:
+        return "ABSENT"
+    if a.get("parked") == "1":
+        return "PARKED"
+    time.sleep(3)
+    b = status_fields()
+    if b is None:
+        return "ABSENT"
+    if b.get("parked") == "1":
+        return "PARKED"
+    return "RUNNING" if b.get("t") != a.get("t") else "STILL"
+
+
+def wait_for(base, secs, needles, label):
+    deadline = time.time() + secs
+    while True:
+        try:
+            delta = sm_delta(base)
+            if any(n in delta for n in needles):
+                return label
+        except Exception:
+            pass          # a missed poll is not a verdict; keep waiting
+        if time.time() >= deadline:
+            return "TIMEOUT"
+        time.sleep(3)
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.exit(__doc__)
+    cmd = argv[1]
+    try:
+        if cmd == "slot":
+            print(slot(sm_both()))
+        elif cmd == "coldboot":
+            print(coldboot(sm_both()))
+        elif cmd == "heartbeat":
+            print(heartbeat())
+        elif cmd == "smlen":
+            print(len(sm_text()))
+        elif cmd == "wait-registered":
+            print(wait_for(int(argv[2]), int(argv[3]), (INSTALLED, MOUNTED, MOUNT_READY, IMAGE_CHECKED), "REGISTERED"))
+        elif cmd == "wait-started":
+            print(wait_for(int(argv[2]), int(argv[3]), (STARTED,), "STARTED"))
+        elif cmd == "wait-released":
+            print(wait_for(int(argv[2]), int(argv[3]), (RELEASED,), "RELEASED"))
+        elif cmd == "wait-parked":
+            deadline = time.time() + int(argv[2])
+            while True:
+                try:
+                    a = status_fields()
+                    if a and a.get("parked") == "1":
+                        print("PARKED")
+                        break
+                except Exception:
+                    pass
+                if time.time() >= deadline:
+                    print("TIMEOUT")
+                    break
+                time.sleep(2)
+        elif cmd == "wait-quiet":
+            # ShadowMount is still scanning/verifying/remounting while its log
+            # grows. A launch sent then gets the PS5's "Can't start game or app"
+            # dialog, which only a pad X press clears. Length, not timestamps:
+            # the console clock and this host's clock are not the same.
+            quiet, limit = int(argv[2]), int(argv[3])
+            deadline = time.time() + limit
+            last, since = None, time.time()
+            while True:
+                try:
+                    n = len(sm_text())
+                    if n != last:
+                        last, since = n, time.time()
+                    elif time.time() - since >= quiet:
+                        print("QUIET")
+                        break
+                except Exception:
+                    pass
+                if time.time() >= deadline:
+                    print("TIMEOUT")
+                    break
+                time.sleep(3)
+        elif cmd == "smslice":
+            for ln in sm_delta(int(argv[2])).splitlines():
+                if TID in ln or "[rtld]" in ln or "crash" in ln.lower():
+                    print(ln)
+        else:
+            sys.exit(__doc__)
+    except Exception as e:
+        sys.stderr.write(f"evo_lifecycle {cmd}: {e}\n")
+        if cmd in ("slot", "heartbeat"):
+            print("UNKNOWN")   # a verdict, not a failure: callers branch on it
+            sys.exit(0)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

@@ -1,0 +1,17 @@
+# libSceAudioIn - added for #106 (the DualSense microphone for the speaker
+# calibration), which stage 6 removed.
+#
+# The user-routed raw PCM capture API. The SDK ships no libSceAudioIn.so, so
+# this is the only way the app module can import it. /system/common/lib, not
+# priv/lib.
+#
+# Nothing records any more, but the module stays NEEDED with the four imports
+# the stage 5 build booted with on 12.70: src/evo_prx_keep.c calls each one, in
+# code that never runs. Without those calls the module would be NEEDED with no
+# imports at all, which the console has never loaded, and a module the loader
+# rejects leaves no log. Every name here must stay referenced there, or
+# package-app.sh's dead-import check stops the build.
+sceAudioInOpen
+sceAudioInInput
+sceAudioInGetSilentState
+sceAudioInClose

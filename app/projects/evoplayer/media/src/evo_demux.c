@@ -1,0 +1,1017 @@
+/*
+ * evo_demux.c — the demux thread + in-place seek path.
+ *
+ * Verbatim move of the PROSPERO_TRUE_AV_SEEK region, the two PacketQueue
+ * instances and the stream indices from main.c (Track A step A5 of
+ * docs/modularisation-plan.md). The only edits are `static` -> external
+ * linkage on what main.c still touches and the transitional extern block
+ * below.
+ */
+#include "evo_demux.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/frame.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/rational.h>
+#include <libavutil/time.h>
+
+#include "pp_playback.h"
+#include "evo_packet_queue.h"
+#include "evo_audio_out.h"
+#include "evo_audio_resample.h"
+#include "evo_vdec.h"
+#include "evo_adec.h"
+#include "pp_stage_breadcrumb.h"
+#include "evo_boot_log.h"
+#include "evo_parallel_io.h"
+
+/* ---------------------------------------------------------------------------
+ * TRANSITIONAL: playback-core decode context + flags + the app playback
+ * object, all still owned by main.c. Replaced by the evo_pb_*() façade and a
+ * passed-in pp_playback* at A7/A8.
+ * ------------------------------------------------------------------------ */
+extern AVFormatContext *play_fmt;
+extern AVCodecContext  *audio_ctx;
+extern evo_vdec        *g_vdec;   /* owns the video codec context (A6) */
+
+extern int      player_paused;
+extern char     current_media_path[512];
+extern double   media_duration_sec;
+extern double   resume_base_offset_seconds;
+extern long long controls_last_used_ms;
+
+extern int      video_decode_done;
+extern int      video_decode_ready;
+extern int      dbg_read_fail;
+extern int      dbg_video_packets;
+extern double   first_video_pts_seconds;
+extern double   video_clock_seconds;
+
+extern AVPacket *video_pending_pkt;
+extern AVPacket *video_video_pending_pkt;
+extern volatile int video_thread_running;  /* evo_playback.c */
+extern volatile int video_decode_parked;
+extern volatile int video_decode_hold;
+
+extern int      playback_profile;
+extern int      video_packet_cap;
+extern int      audio_packet_cap;
+extern long long video_queue_byte_cap;
+extern long long audio_queue_byte_cap;
+
+/* Start-of-stream pre-buffer. Armed by PlaybackController for a network
+ * source, cleared here - see the note in Bridge.cpp. */
+extern volatile int pb_prebuffer_hold;
+extern int          pb_prebuffer_packets;
+extern int          pb_prebuffer_max_ms;
+extern int          pb_rebuffer_enabled;
+extern int          pb_rebuffer_low_packets;
+extern int          pb_rebuffer_packets;
+extern int          pb_rebuffer_max_ms;
+
+/* Scrub hold (Bridge.cpp). Read here so a rebuffer cannot arm while the seek
+ * bar is being dragged - the picture is already parked. */
+extern volatile int pb_scrub_hold;
+
+extern pp_playback g_pp_pb;
+
+long long now_ms(void);
+#include "evo_toast.h"
+
+/* ---------------------------------------------------------------------------
+ * Demux state (exported via evo_demux.h).
+ * ------------------------------------------------------------------------ */
+PacketQueue video_packet_queue = { .mutex = PTHREAD_MUTEX_INITIALIZER };
+PacketQueue audio_packet_queue = { .mutex = PTHREAD_MUTEX_INITIALIZER };
+
+int video_stream_index = -1;
+int audio_stream_index = -1;
+
+volatile int demux_thread_running = 0;
+pthread_t    demux_thread;
+
+
+static pthread_mutex_t prospero_seek_mutex =
+    PTHREAD_MUTEX_INITIALIZER;
+
+static volatile int prospero_seek_pending = 0;
+static volatile int prospero_seek_in_progress = 0;
+
+static double prospero_seek_target_seconds = 0.0;
+static int prospero_seek_restore_paused = 0;
+/* The base to put back if the seek fails (< 0: leave it). */
+static double prospero_seek_base_on_failure = -1.0;
+
+double media_timeline_origin_seconds = 0.0;
+
+int prospero_seek_busy(void)
+{
+    return prospero_seek_pending || prospero_seek_in_progress;
+}
+
+double prospero_seek_container_seconds(double target_seconds)
+{
+    double at = target_seconds + media_timeline_origin_seconds;
+    if (play_fmt && play_fmt->iformat && play_fmt->iformat->name &&
+        strcmp(play_fmt->iformat->name, "hls") == 0)
+        at += 0.25;
+    return at;
+}
+
+
+int prospero_request_inplace_seek(
+    double target_seconds,
+    int restore_paused,
+    double base_on_failure
+) {
+    /*
+     * An open stream is all a seek needs. This also required current_media_path,
+     * which PlaybackController deliberately leaves EMPTY for a provider source
+     * (a URL with a session token must not reach the sidecar scan or the
+     * favourites store) - so every seek in an Emby, Jellyfin, Xtream or IPTV
+     * VOD stream was dropped here without a word, after the scrub had already
+     * paused the clock: the picture froze. Hardware, 2026-10-01.
+     */
+    if (
+        !play_fmt ||
+        (video_stream_index < 0 && audio_stream_index < 0)
+    ) {
+        return 0;
+    }
+
+    if (target_seconds < 0.0) {
+        target_seconds = 0.0;
+    }
+
+    if (media_duration_sec > 1.0) {
+        double maximum =
+            media_duration_sec - 1.0;
+
+        if (maximum < 0.0) {
+            maximum = 0.0;
+        }
+
+        if (target_seconds > maximum) {
+            target_seconds = maximum;
+        }
+    }
+
+    player_paused = 1;
+    controls_last_used_ms = now_ms();
+
+    pthread_mutex_lock(
+        &prospero_seek_mutex
+    );
+
+    prospero_seek_target_seconds =
+        target_seconds;
+
+    prospero_seek_restore_paused =
+        restore_paused;
+
+    /* A request that replaces one the demux thread hasn't run yet keeps
+     * that one's base: playback never left it. */
+    if (!prospero_seek_pending)
+        prospero_seek_base_on_failure = base_on_failure;
+
+    prospero_seek_pending = 1;
+
+    pthread_mutex_unlock(
+        &prospero_seek_mutex
+    );
+
+    return 1;
+}
+
+
+
+
+void prospero_seek_reset(void)
+{
+    pthread_mutex_lock(&prospero_seek_mutex);
+    prospero_seek_pending = 0;
+    prospero_seek_in_progress = 0;
+    prospero_seek_target_seconds = 0.0;
+    prospero_seek_restore_paused = 0;
+    prospero_seek_base_on_failure = -1.0;
+    pthread_mutex_unlock(&prospero_seek_mutex);
+}
+
+
+static int prospero_process_seek_request(void) {
+    double target_seconds;
+    int restore_paused;
+    double base_on_failure;
+
+    pthread_mutex_lock(
+        &prospero_seek_mutex
+    );
+
+    if (!prospero_seek_pending) {
+        pthread_mutex_unlock(
+            &prospero_seek_mutex
+        );
+
+        return 0;
+    }
+
+    target_seconds =
+        prospero_seek_target_seconds;
+
+    restore_paused =
+        prospero_seek_restore_paused;
+
+    base_on_failure =
+        prospero_seek_base_on_failure;
+
+    prospero_seek_pending = 0;
+    prospero_seek_in_progress = 1;
+
+    pthread_mutex_unlock(
+        &prospero_seek_mutex
+    );
+
+    /* The frames carry the container's timestamps: the discard target is
+     * the target on that clock (see media_timeline_origin_seconds). */
+    pp_playback_notify_seek_begin(
+        &g_pp_pb,
+        (int64_t)((target_seconds + media_timeline_origin_seconds) * 1000000.0)
+    );
+
+    /*
+     * Wait for the video decode thread to be out of the decoder before
+     * anything below touches it: evo_vdec_flush() and the pending-packet free
+     * both race a decode call still in flight. The old fixed 5 ms was enough
+     * while a decode call was short; a 4K AV1 frame in dav1d is not, and a
+     * .mkv seek (av_seek_frame ~0 ms) flushed dav1d under a live
+     * dav1d_send_data - SIGSEGV in dav1d_parse_obus (#94, hardware
+     * 2026-09-26). Bounded, so a wedged decode (#39) cannot hang the seek.
+     *
+     * video_decode_hold, not player_paused: a committed scrub requests the
+     * seek and then moves the FSM straight to Playing, whose entry clears
+     * player_paused before this thread even gets here - so the decode thread
+     * never parked and every seek sat out the full 2 s timeout, then flushed
+     * unsynchronized anyway. The hold belongs to the seek alone.
+     */
+    video_decode_hold = 1;
+    usleep(5000);
+    if (video_thread_running) {
+        int waited_ms = 0;
+        while (!video_decode_parked && waited_ms < 2000) {
+            usleep(1000);
+            waited_ms++;
+        }
+        if (!video_decode_parked || waited_ms > 50) {
+            char d[64];
+            snprintf(d, sizeof d, "parked=%d waited_ms=%d",
+                     (int)video_decode_parked, waited_ms);
+            pp_stage_bc("SEEK_PARK", d);
+        }
+    }
+
+    
+    /*
+     * Clear EOF immediately. This wakes the video and audio decoder
+     * loops while the seek and queue reset are being completed.
+     */
+    video_decode_done = 0;
+    video_decode_ready = 1;
+    dbg_read_fail = 0;
+
+packet_queue_clear(
+        &video_packet_queue
+    );
+
+    packet_queue_clear(
+        &audio_packet_queue
+    );
+
+    if (video_pending_pkt) {
+        av_packet_free(
+            &video_pending_pkt
+        );
+
+        video_pending_pkt = NULL;
+    }
+
+    if (video_video_pending_pkt) {
+        av_packet_free(
+            &video_video_pending_pkt
+        );
+
+        video_video_pending_pkt = NULL;
+    }
+
+    audio_queue_count = 0;
+    audio_queue_read = 0;
+    audio_queue_write = 0;
+    audio_accum_pos = 0;
+
+    double decoder_seek_seconds =
+        prospero_seek_container_seconds(target_seconds);
+
+    /*
+     * No extra backstep. AVSEEK_FLAG_BACKWARD already lands on the keyframe at
+     * or before this timestamp, which is exactly what an inter-frame codec
+     * needs to restart. The 0.5 s that used to be subtracted here only widened
+     * the run-up the decoder then has to chew through and throw away - and
+     * when the target sat just after a keyframe it pushed the seek back a
+     * whole extra GOP, which is what made a longer seek hitch harder than a
+     * short one.
+     */
+
+    int seek_stream =
+        video_stream_index >= 0
+            ? video_stream_index
+            : audio_stream_index;
+
+    AVRational time_base =
+        play_fmt->streams[
+            seek_stream
+        ]->time_base;
+
+    int64_t seek_timestamp =
+        (int64_t)(
+            decoder_seek_seconds /
+            av_q2d(time_base)
+        );
+
+    /* #94: a seek in a raw .obu (no index - the demuxer scans forward from
+     * the last keyframe it has seen) took EVO down with nothing after it in
+     * evo.log. This line and the ms= on SEEK_AVFRAME bracket the call. */
+    {
+        char d[112];
+        snprintf(d, sizeof d, "fmt=%s ts=%lld target=%.3f",
+                 play_fmt->iformat ? play_fmt->iformat->name : "?",
+                 (long long)seek_timestamp, target_seconds);
+        pp_stage_bc("SEEK_BEGIN", d);
+    }
+    const int64_t seek_t0 = av_gettime_relative();
+
+    int result =
+        av_seek_frame(
+            play_fmt,
+            seek_stream,
+            seek_timestamp,
+            AVSEEK_FLAG_BACKWARD
+        );
+
+    /* Big files (14 GB GTA trailer) whose stream index doesn't cover the byte
+     * range can fail the timestamp seek; fall back to a byte seek. */
+    if (result < 0) {
+        result = av_seek_frame(play_fmt, seek_stream, seek_timestamp,
+                               AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
+    }
+    {
+        char d[112];
+        snprintf(d, sizeof d, "rc=%d ts=%lld strm=%d target=%.3f ms=%lld",
+                 result, (long long)seek_timestamp, seek_stream, target_seconds,
+                 (long long)((av_gettime_relative() - seek_t0) / 1000));
+        pp_stage_bc("SEEK_AVFRAME", d);   /* #32 diagnostics -> /mnt/usb0/evo.log */
+    }
+
+    if (result >= 0) {
+        /*
+         * av_seek_frame() already flushes the demuxer before it repositions,
+         * then sets the stream's running dts to the timestamp it landed on.
+         * Flushing again here resets that dts. A container stamps its own
+         * packets so it never mattered - but a stream with no timestamps (raw
+         * .obu, AVFMT_NOTIMESTAMPS) has only that dts, and after the extra
+         * flush restarted at 0: every frame then read as before the target
+         * and the whole seek was decoded and thrown away in the dark (#94,
+         * Chimera: a jump to 118 s discarded 1005 frames and never played).
+         */
+        if (!(play_fmt->iformat->flags & AVFMT_NOTIMESTAMPS))
+            avformat_flush(play_fmt);
+
+        evo_vdec_flush(g_vdec);   /* video codec + scratch frame/packet (A6) */
+        if (g_adec) {
+            evo_adec_flush(g_adec);
+        }
+
+        if (audio_ctx) {
+            avcodec_flush_buffers(
+                audio_ctx
+            );
+        }
+
+        prospero_audio_resampler_reset();
+
+        /*
+         * The UI position is base offset plus the new audio clock.
+         */
+        resume_base_offset_seconds =
+            target_seconds;
+
+        /*
+         * Arm the audio discard window before the decode threads are let go,
+         * so the run-up between the keyframe this seek landed on and the
+         * target is dropped on the audio side too. Both clocks then restart
+         * from the target and the picture resumes without waiting for audio.
+         */
+        if (target_seconds > 0.05)
+            audio_seek_discard_until = target_seconds + media_timeline_origin_seconds;
+        else
+            audio_seek_discard_until = -1.0;
+
+        audio_samples_played = 0;
+        audio_samples_decoded = 0;
+
+        audio_clock_seconds = 0.0;
+        audio_pts_seconds = 0.0;
+        video_clock_seconds = 0.0;
+
+        first_audio_pts_seconds = -1.0;
+        first_video_pts_seconds = -1.0;
+
+        video_decode_done = 0;
+        dbg_read_fail = 0;
+
+        /*
+         * Older builds allowed the audio decoder thread to exit at
+         * EOF. Restart it if this session reached EOF before seeking.
+         */
+        if (
+            audio_ctx &&
+            !audio_decode_thread_running
+        ) {
+            audio_decode_thread_running = 1;
+
+            pthread_create(
+                &audio_decode_thread,
+                NULL,
+                audio_decode_thread_func,
+                NULL
+            );
+        }
+
+    } else {
+        audio_seek_discard_until = -1.0;
+        /* Nothing moved and the clocks were never reset, so playback
+         * carries on where it was: put back the base the caller replaced
+         * with the target, or the position stays at a place it never got
+         * to (and a video's saved progress with it). If a newer seek waits,
+         * the base already reads its target: leave that, and hand it this
+         * base to fall back to, since playback still hasn't moved. */
+        if (base_on_failure >= 0.0) {
+            pthread_mutex_lock(&prospero_seek_mutex);
+            if (prospero_seek_pending)
+                prospero_seek_base_on_failure = base_on_failure;
+            else
+                resume_base_offset_seconds = base_on_failure;
+            pthread_mutex_unlock(&prospero_seek_mutex);
+        }
+        toast_error("Couldn't jump there", NULL);
+    }
+
+    prospero_seek_in_progress = 0;
+    video_decode_hold = 0;
+
+    pp_playback_notify_seek_end(
+        &g_pp_pb,
+        result >= 0,
+        0,
+        0
+    );
+    /* notify_seek_begin() paused the clock. Always lift that if we were
+     * playing — on a FAILED seek notify_seek_end() only clears seek_discarding
+     * and leaves the clock paused, which drops every frame -> frozen picture. */
+    if (!restore_paused)
+        pp_playback_resume(&g_pp_pb);
+
+    player_paused =
+        restore_paused ? 1 : 0;
+
+    controls_last_used_ms =
+        now_ms();
+
+    return result >= 0;
+}
+
+
+/*
+ * The one queue the pre-buffer hold waits on. An audio-only stream never fills
+ * the video queue, so it gates on whichever queue this source actually feeds.
+ */
+static PacketQueue *prebuffer_gated_queue(void)
+{
+    return (video_stream_index >= 0) ? &video_packet_queue : &audio_packet_queue;
+}
+
+/*
+ * Which kind of hold is up. Set by rebuffer_check(), cleared by
+ * prebuffer_check() when it releases, and read only to pick the fill target -
+ * a rebuffer wants a deeper one than an open. See the note in Bridge.cpp.
+ */
+static int pb_hold_is_rebuffer = 0;
+
+/*
+ * Has `q` reached its read-ahead ceiling? Packets or bytes, whichever binds
+ * first - see the note on the caps in Bridge.cpp. A byte cap of 0 means the
+ * packet count is the only limit, which is how local files still behave.
+ */
+static int queue_at_cap(PacketQueue *q, int cap, long long byte_cap)
+{
+    if (packet_queue_count(q) >= cap)
+        return 1;
+    if (byte_cap > 0 && packet_queue_bytes(q) >= byte_cap)
+        return 1;
+    return 0;
+}
+
+/*
+ * Release the pre-buffer hold once the queue has a cushion, the deadline has
+ * passed, or the stream ended. Called from the demux loop after each packet.
+ * `ended` is set on a read failure, where waiting for depth that will never
+ * arrive would park the decode threads for the whole deadline.
+ */
+static void prebuffer_check(long long deadline_ms, int ended)
+{
+    if (!pb_prebuffer_hold)
+        return;
+
+    /* An audio-only stream never fills the video queue, so measure whichever
+     * queue this stream actually feeds. */
+    const int have_video = (video_stream_index >= 0);
+    const int depth      = have_video ? packet_queue_count(&video_packet_queue)
+                                      : packet_queue_count(&audio_packet_queue);
+
+    /*
+     * Never ask for more than the queue can hold. At or above the cap the
+     * demux thread parks in the queue-full wait below and never gets back
+     * here to clear the hold - the decode threads would stay parked forever.
+     */
+    const int cap    = have_video ? video_packet_cap : audio_packet_cap;
+    int       target = pb_hold_is_rebuffer ? pb_rebuffer_packets
+                                           : pb_prebuffer_packets;
+    if (target > cap - 1) target = cap - 1;
+    if (target < 1)       target = 1;
+
+    /*
+     * A queue at its cap is as much cushion as this stream will ever get, so
+     * release on that too rather than sitting out the deadline.
+     *
+     * Only the gated queue counts. This used to test BOTH, to stop a stream
+     * whose audio capped out before video reached its target from buffering
+     * for the full deadline - but it meant any source with a fat audio track
+     * started with no video cushion at all. Hardware, 2026-10-02 (Avatar UHD
+     * remux, TrueHD 8ch): "PREBUFFER_DONE queue-full packets=1 target=48" -
+     * audio filled its 96-packet queue in 0.13 s and released the hold with a
+     * single video packet queued, so playback began 4 s of cushion short.
+     * demux_wait_for_room() now keeps reading past a full ungated queue while
+     * the hold is up, which is what that escape was really guarding against.
+     */
+    const int gated_full = queue_at_cap(prebuffer_gated_queue(),
+                                        have_video ? video_packet_cap
+                                                   : audio_packet_cap,
+                                        have_video ? video_queue_byte_cap
+                                                   : audio_queue_byte_cap);
+
+    const int timed_out = (now_ms() >= deadline_ms);
+    if (!ended && !timed_out && !gated_full && depth < target)
+        return;
+
+    pb_prebuffer_hold = 0;
+    {
+        char d[64];
+        snprintf(d, sizeof d, "%s packets=%d target=%d",
+                 ended      ? "ended"
+                 : timed_out  ? "deadline"
+                 : gated_full ? "queue-full"
+                              : "filled",
+                 depth, target);
+        pp_stage_bc(pb_hold_is_rebuffer ? "P8_04_REBUFFER_DONE"
+                                        : "P8_03_PREBUFFER_DONE", d);
+    }
+    pb_hold_is_rebuffer = 0;
+}
+
+/*
+ * Low-water mark on the OTHER stream's queue. Below this, that decoder is
+ * within a fraction of a second of running dry and the demux thread must not
+ * stay parked on a full queue - see demux_wait_for_room().
+ */
+#define DEMUX_STARVE_LOW_PACKETS 12
+
+/*
+ * Hard ceiling on how far a queue may overshoot its cap while the other stream
+ * is starving. The cap is a memory guard, not a correctness invariant, and
+ * PACKET_QUEUE_SIZE (512) is the real limit - packet_queue_push() simply
+ * returns 0 there, so overshooting can never corrupt the ring.
+ */
+#define DEMUX_OVERSHOOT_FACTOR 2
+
+/*
+ * Wait for room in `q`, but never at the cost of starving the other stream.
+ *
+ * av_read_frame() hands packets back in interleave order, so parking here on a
+ * full queue also stops the OTHER stream's packets arriving. That is one leg of
+ * a four-way deadlock hit on hardware after seeking into 4K HEVC + E-AC-3
+ * (2026-09-28, Avatar UHD remux):
+ *
+ *   audio output parks because the audio clock is >0.5 s ahead of video
+ *     -> the decoded-PCM ring stays above its high-water mark
+ *     -> the audio decode thread stops popping packets
+ *     -> the audio packet queue caps out
+ *     -> the demux thread parks HERE
+ *     -> the video packet queue drains to empty
+ *     -> video stops decoding, so video_clock_seconds stops advancing
+ *     -> audio output's "ahead of video" test is now permanently true.
+ *
+ * Nothing moves again. evo.log showed video_frames=0 for two minutes with
+ * byte-identical allocator counters (no av_read_frame at all) while the UI
+ * carried on at 59.9 fps.
+ *
+ * Releasing as soon as the other queue runs dry cuts that cycle: the queue in
+ * hand overshoots its cap by a bounded amount instead, which costs a few MB
+ * and keeps both decoders fed.
+ */
+static void demux_wait_for_room(PacketQueue *q, int cap, long long byte_cap,
+                                PacketQueue *other, int other_cap,
+                                long long prebuffer_deadline_ms, int sleep_us)
+{
+    int limit = cap * DEMUX_OVERSHOOT_FACTOR;
+    if (limit > PACKET_QUEUE_SIZE - 1)
+        limit = PACKET_QUEUE_SIZE - 1;
+
+    /* The overshoot is a few MB of slack, not a second budget: bound it in
+     * bytes too, or a high-bitrate source doubles its queue in megabytes as
+     * well as packets just because the other stream went quiet. */
+    long long byte_limit = byte_cap > 0 ? byte_cap + byte_cap / 4 : 0;
+
+    /* An other-stream low-water above its own cap would release immediately
+     * and turn the cap off altogether; keep it strictly below. */
+    int starve_low = DEMUX_STARVE_LOW_PACKETS;
+    if (other_cap > 0 && starve_low > other_cap / 2)
+        starve_low = other_cap / 2;
+
+    /*
+     * ...and never past a seek. A scrub stops the video consuming packets
+     * without setting player_paused, so with both queues at their caps this
+     * loop waited forever - and the seek request, which is only picked up at
+     * the top of the demux loop, was never reached. Hardware, 2026-10-01: a
+     * D-pad seek in a Jellyfin stream froze the picture for good, evo.log
+     * showing DEMUX_OVERSHOOT and then no SEEK_BEGIN at all ("seek_req=3 ok=0
+     * fail=0"). Network streams hit it far more readily than local files: they
+     * read ahead in bursts and fill the queues to the cap.
+     */
+    while (demux_thread_running &&
+           !prospero_seek_pending &&
+           queue_at_cap(q, cap, byte_cap)) {
+        /* Still re-check the pre-buffer here: this loop does not return to the
+         * top of the demux loop, so it is the only place the deadline can fire
+         * once a queue is full. It is also what keeps the pre-buffer itself
+         * from deadlocking when audio caps out before video reaches its
+         * target (audio is ~43 pkt/s against 30 fps). */
+        prebuffer_check(prebuffer_deadline_ms, 0);
+
+        /*
+         * Still pre-buffering, and this is not the queue being waited on.
+         *
+         * The hold parks this stream's consumer, so its queue cannot drain
+         * until the hold clears - and the hold only clears once the OTHER
+         * queue reaches its target, which only this thread can fill. Parking
+         * here would deadlock both until the deadline fired. Overshoot
+         * instead; it is bounded, and it ends the moment the hold releases.
+         */
+        if (pb_prebuffer_hold && q != prebuffer_gated_queue() &&
+            !queue_at_cap(q, limit, byte_limit)) {
+            return;
+        }
+
+        /* The other decoder is about to run dry and only this thread can feed
+         * it. Overshoot rather than deadlock. */
+        if (other && packet_queue_count(other) < starve_low &&
+            !queue_at_cap(q, limit, byte_limit)) {
+            /* Rate-limited: this fires per packet once it starts, and one
+             * line per 2 s is enough to tell a starved interleave apart from
+             * a healthy one in evo.log without flooding it. */
+            static long long s_last_bc_ms = 0;
+            long long now = now_ms();
+            if (now - s_last_bc_ms >= 2000) {
+                char d[80];
+                snprintf(d, sizeof d, "q=%d cap=%d limit=%d other=%d low=%d",
+                         packet_queue_count(q), cap, limit,
+                         packet_queue_count(other), starve_low);
+                pp_stage_bc("DEMUX_OVERSHOOT", d);
+                s_last_bc_ms = now;
+            }
+            return;
+        }
+
+        usleep(sleep_us);
+    }
+}
+
+/*
+ * Re-arm the pre-buffer hold when the queue runs dry mid-playback.
+ *
+ * See the note on pb_rebuffer_enabled in Bridge.cpp for why: without this a
+ * link that cannot sustain the bitrate produced indefinite slow motion rather
+ * than a buffering pause. prebuffer_check() releases the hold again on the
+ * normal target, so the deadline has to be refreshed here - it is measured
+ * from when the hold was armed, and the one taken at thread start is long
+ * past by now.
+ *
+ * Deliberately NOT armed across a seek. The seek-discard window needs the
+ * video decode thread running to reach the target, and parking it here would
+ * stall the discard until the deadline fired - a 4 s freeze on every seek.
+ */
+static void rebuffer_check(long long *deadline_ms)
+{
+    if (!pb_rebuffer_enabled || pb_prebuffer_hold)
+        return;
+    if (player_paused || prospero_seek_pending || pb_scrub_hold)
+        return;
+    if (g_pp_pb.active && g_pp_pb.seek_discarding)
+        return;
+    /* At EOF the queue is empty because there is nothing left to read, not
+     * because the link is short; holding would never release. */
+    if (video_decode_done)
+        return;
+
+    PacketQueue *q = prebuffer_gated_queue();
+    if (packet_queue_count(q) > pb_rebuffer_low_packets)
+        return;
+
+    pb_hold_is_rebuffer = 1;
+    pb_prebuffer_hold   = 1;
+    *deadline_ms = now_ms() + (long long)pb_rebuffer_max_ms;
+
+    {
+        char d[64];
+        snprintf(d, sizeof d, "q=%d low=%d target=%d",
+                 packet_queue_count(q), pb_rebuffer_low_packets,
+                 pb_rebuffer_packets);
+        pp_stage_bc("P8_04_REBUFFER_ARM", d);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Network read recovery.
+ *
+ * A failed read used to be the end of the file: the AVIOContext latches its
+ * error, every later av_read_frame() fails, and video stops while the audio
+ * read-ahead plays on for another thirty seconds. On hardware 2026-10-07 a
+ * Jellyfin stream lost one chunk to an allocation failure and never showed
+ * another frame, although the network and the memory were both back seconds
+ * later. So on a network source, a read error short of the real end clears
+ * the latch, seeks back to the last packet demuxed and drops what it has
+ * already queued until it is past that point again.
+ * ------------------------------------------------------------------------ */
+#define DEMUX_RECOVER_TRIES 10
+
+static int64_t demux_last_vdts = AV_NOPTS_VALUE;
+static int64_t demux_last_adts = AV_NOPTS_VALUE;
+static int     demux_catching_up;
+static int     demux_recover_tries;
+static int     demux_gave_up_told;
+
+/* For the /stats dashboard. */
+volatile int demux_recoveries_total;
+volatile int demux_recovering;
+
+static void demux_recover_reset(void)
+{
+    demux_last_vdts = AV_NOPTS_VALUE;
+    demux_last_adts = AV_NOPTS_VALUE;
+    demux_catching_up = 0;
+    demux_recover_tries = 0;
+    demux_gave_up_told = 0;
+    demux_recovering = 0;
+}
+
+static int pio_open(void)
+{
+    evo_pio_stats_t st;
+    evo_pio_get_stats(&st);
+    return st.active;
+}
+
+static int64_t pkt_ts(const AVPacket *pkt)
+{
+    return pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
+}
+
+/* 1 when the stream really ended (or recovery is not ours to try). */
+static int demux_read_is_final(int read_result)
+{
+    if (!pb_rebuffer_enabled || !play_fmt || !play_fmt->pb ||
+        video_stream_index < 0 || demux_last_vdts == AV_NOPTS_VALUE)
+        return 1;
+    if (read_result == AVERROR_EOF && media_duration_sec > 0.0) {
+        const AVStream *st = play_fmt->streams[video_stream_index];
+        const double at = demux_last_vdts * av_q2d(st->time_base) -
+                          (st->start_time != AV_NOPTS_VALUE ? st->start_time * av_q2d(st->time_base) : 0.0);
+        if (at >= media_duration_sec - 3.0)
+            return 1;
+    }
+    return demux_recover_tries >= DEMUX_RECOVER_TRIES;
+}
+
+static void demux_recover(int read_result)
+{
+    demux_recover_tries++;
+    demux_recoveries_total++;
+    demux_recovering = 1;
+    /* Through the parallel reader the player has already said so
+     * (PlayerScreen watches the reader); one toast per outage, not two. */
+    if (demux_recover_tries == 1 && !pio_open())
+        toast_error("Connection lost", "Trying again\xE2\x80\xA6");
+    const AVStream *st = play_fmt->streams[video_stream_index];
+    char err[64];
+    av_strerror(read_result, err, sizeof err);
+    evo_boot_log("demux: read failed (%s) at %.2fs - recovering, try %d/%d", err,
+                 demux_last_vdts * av_q2d(st->time_base), demux_recover_tries,
+                 DEMUX_RECOVER_TRIES);
+    /* back off: give the network (and the heap) a moment */
+    usleep(demux_recover_tries == 1 ? 200000 : 1000000);
+    play_fmt->pb->error = 0;
+    play_fmt->pb->eof_reached = 0;
+    int rc = av_seek_frame(play_fmt, video_stream_index, demux_last_vdts, AVSEEK_FLAG_BACKWARD);
+    if (rc < 0) {
+        av_strerror(rc, err, sizeof err);
+        evo_boot_log("demux: recovery seek failed (%s)", err);
+        play_fmt->pb->error = 0;
+        play_fmt->pb->eof_reached = 0;
+    }
+    demux_catching_up = 1 | (demux_last_adts != AV_NOPTS_VALUE ? 2 : 0);
+}
+
+/* While catching up after a recovery seek: 1 = already queued, drop it. */
+static int demux_already_have(const AVPacket *pkt)
+{
+    if (!demux_catching_up)
+        return 0;
+    const int64_t ts = pkt_ts(pkt);
+    if (pkt->stream_index == video_stream_index && (demux_catching_up & 1)) {
+        if (ts == AV_NOPTS_VALUE || ts <= demux_last_vdts)
+            return 1;
+        evo_boot_log("demux: recovered - picking up after %.2fs",
+                     demux_last_vdts * av_q2d(play_fmt->streams[video_stream_index]->time_base));
+        demux_catching_up &= ~1;
+        demux_recovering = 0;
+        if (!pio_open())
+            toast_success("Back online", "The stream is playing again");
+        return 0;
+    }
+    if (pkt->stream_index == audio_stream_index && (demux_catching_up & 2)) {
+        if (ts == AV_NOPTS_VALUE || ts <= demux_last_adts)
+            return 1;
+        demux_catching_up &= ~2;
+        return 0;
+    }
+    if (pkt->stream_index == video_stream_index || pkt->stream_index == audio_stream_index)
+        return 0;
+    return 1;    /* any other stream is dropped anyway */
+}
+
+void *demux_thread_func(void *arg) {
+    (void)arg;
+
+    demux_recover_reset();
+
+    /*
+     * This thread is created fresh per file, and the hold PlaybackController
+     * just armed is an open pre-buffer. Backing out of playback while a
+     * rebuffer was up leaves the flag set - prebuffer_check() only clears it
+     * on release - and the next file would then open against the rebuffer's
+     * deeper target and longer deadline, i.e. a slower start for no reason.
+     */
+    pb_hold_is_rebuffer = 0;
+
+    AVPacket *pkt =
+        av_packet_alloc();
+
+    if (!pkt) {
+        /* Nothing will ever fill the queue, so do not leave the decode
+         * threads parked on a hold that can no longer be cleared. */
+        pb_prebuffer_hold = 0;
+        return NULL;
+    }
+
+    /* Deadline for the pre-buffer, measured from when this thread actually
+     * starts reading rather than from when it was created. Not const: a
+     * mid-playback rebuffer re-arms the hold and needs a fresh one. */
+    long long prebuffer_deadline_ms = now_ms() + (long long)pb_prebuffer_max_ms;
+
+    while (demux_thread_running) {
+        /*
+         * Process seek requests before checking the paused state.
+         */
+        if (prospero_process_seek_request()) {
+            av_packet_unref(pkt);
+            demux_recover_reset();
+            continue;
+        }
+
+        /* Paused or not, keep reading up to the queue caps: a pause is the
+         * cheapest time to build cushion on a network stream. The wait in
+         * demux_wait_for_room() bounds it, and it no longer exits on a pause -
+         * that dropped the packet in hand, and a lost reference frame smears
+         * the picture until the next keyframe. */
+        int read_result =
+            av_read_frame(
+                play_fmt,
+                pkt
+            );
+
+        if (read_result < 0) {
+            if (!demux_read_is_final(read_result)) {
+                demux_recover(read_result);
+                continue;
+            }
+            if (demux_recover_tries >= DEMUX_RECOVER_TRIES && !demux_gave_up_told) {
+                demux_gave_up_told = 1;
+                demux_recovering = 0;
+                evo_boot_log("demux: gave up after %d tries - stream stopped", demux_recover_tries);
+                toast_error("The connection didn't come back", "Playback stopped");
+            }
+            /*
+             * Keep the demux thread alive so seeking backward from EOF
+             * does not require reopening the file.
+             */
+            video_decode_done = 1;
+            prebuffer_check(prebuffer_deadline_ms, 1);
+            usleep(5000);
+            continue;
+        }
+
+        if (demux_already_have(pkt)) {
+            av_packet_unref(pkt);
+            continue;
+        }
+        if (pkt->stream_index == video_stream_index) {
+            if (pkt_ts(pkt) != AV_NOPTS_VALUE)
+                demux_last_vdts = pkt_ts(pkt);
+            demux_recover_tries = 0;
+        } else if (pkt->stream_index == audio_stream_index && pkt_ts(pkt) != AV_NOPTS_VALUE) {
+            demux_last_adts = pkt_ts(pkt);
+        }
+
+        video_decode_done = 0;
+        prebuffer_check(prebuffer_deadline_ms, 0);
+        rebuffer_check(&prebuffer_deadline_ms);
+
+        if (
+            pkt->stream_index ==
+            video_stream_index
+        ) {
+            /*
+             * Do not drop non-keyframes in demux — that freezes for a full GOP
+             * (often every 1–2s). Cap queue by waiting only.
+             */
+            demux_wait_for_room(&video_packet_queue, video_packet_cap,
+                                video_queue_byte_cap,
+                                &audio_packet_queue, audio_packet_cap,
+                                prebuffer_deadline_ms,
+                                playback_profile >= 3 ? 300 : 500);
+
+            /* A seek arrived while waiting: this packet is from before it, and
+             * the seek clears the queues anyway. Drop it; the loop top seeks. */
+            if (
+                demux_thread_running &&
+                !prospero_seek_pending
+            ) {
+                packet_queue_push(
+                    &video_packet_queue,
+                    pkt
+                );
+
+                dbg_video_packets++;
+            }
+        } else if (
+            pkt->stream_index ==
+            audio_stream_index
+        ) {
+            demux_wait_for_room(&audio_packet_queue, audio_packet_cap,
+                                audio_queue_byte_cap,
+                                &video_packet_queue, video_packet_cap,
+                                prebuffer_deadline_ms, 1000);
+
+            if (
+                demux_thread_running &&
+                !prospero_seek_pending
+            ) {
+                packet_queue_push(
+                    &audio_packet_queue,
+                    pkt
+                );
+            }
+        }
+
+        /* Every other stream (subtitles, timed metadata) is dropped here:
+         * nothing reads them. */
+        av_packet_unref(pkt);
+    }
+
+    av_packet_free(&pkt);
+    return NULL;
+}
+

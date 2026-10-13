@@ -1,0 +1,72 @@
+<rml>
+<head>
+    <link type="text/rcss" href="about.rcss"/>
+</head>
+<body id="about-body">
+    <!-- Navigation rail is rendered via standalone navbar.rml overlay -->
+
+    <!--
+      The RmlUi About page, shown when the UI kit could not start (the kit
+      draws its own). Same content: the version, the license notice GPLv3
+      section 5(d) asks for, and the credits. The text comes from
+      include/evo_about_text.hpp and is filled in by
+      EvoRmlApp::UpdateAboutState; the ids below are where it goes.
+    -->
+    <div id="content-pane">
+        <div id="about-header">
+            <div id="header-left">
+                <div id="header-indicator"></div>
+                <div id="header-icon-box">
+                    <img id="header-icon" src="../icons/icon_app_small.png"/>
+                </div>
+                <div id="header-titles">
+                    <!-- The name, version and build come from EvoRmlApp::UpdateAboutState. -->
+                    <div id="header-title-row">
+                        <span id="about-title"></span>
+                        <span id="about-version-pill" class="badge-pill"></span>
+                        <span id="about-build-tag" class="badge-tag"></span>
+                    </div>
+                    <div id="about-tagline"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="about-legal">
+            <div class="about-heading">License</div>
+            <div id="about-license-0" class="about-para"></div>
+            <div id="about-license-1" class="about-para"></div>
+            <div id="about-license-2" class="about-para"></div>
+            <div class="about-heading about-heading-gap">Source code</div>
+            <div id="about-source" class="about-para"></div>
+        </div>
+
+        <div id="about-credits">
+            <div class="about-heading">Built with</div>
+            <div class="credit-row"><span id="about-credit-0" class="credit-what"></span><span id="about-credit-lic-0" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-1" class="credit-what"></span><span id="about-credit-lic-1" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-2" class="credit-what"></span><span id="about-credit-lic-2" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-3" class="credit-what"></span><span id="about-credit-lic-3" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-4" class="credit-what"></span><span id="about-credit-lic-4" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-5" class="credit-what"></span><span id="about-credit-lic-5" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-6" class="credit-what"></span><span id="about-credit-lic-6" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-7" class="credit-what"></span><span id="about-credit-lic-7" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-8" class="credit-what"></span><span id="about-credit-lic-8" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-9" class="credit-what"></span><span id="about-credit-lic-9" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-10" class="credit-what"></span><span id="about-credit-lic-10" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-11" class="credit-what"></span><span id="about-credit-lic-11" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-12" class="credit-what"></span><span id="about-credit-lic-12" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-13" class="credit-what"></span><span id="about-credit-lic-13" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-14" class="credit-what"></span><span id="about-credit-lic-14" class="credit-license"></span></div>
+            <div class="credit-row"><span id="about-credit-15" class="credit-what"></span><span id="about-credit-lic-15" class="credit-license"></span></div>
+            <div id="about-evo" class="about-note"></div>
+        </div>
+
+        <div id="about-footer">
+            <div class="footer-hint">
+                <div class="glyph-badge"><img src="../icons/btn_circle.png" class="glyph-badge-img"/></div>
+                <span class="footer-text">BACK</span>
+            </div>
+        </div>
+    </div>
+</body>
+</rml>

@@ -1,0 +1,25 @@
+<rml>
+<head>
+    <link type="text/rcss" href="twitch_fallback.rcss"/>
+</head>
+<body id="fb-body">
+    <!--
+      What the Twitch screens show when the UI kit could not start
+      (evo_hui_start_failed). Those screens exist only in the kit, so without
+      it this plain page stands in for all of them. It says what happened and
+      offers Settings (RmlUi has its own) or Quit. The rail is navbar.rml.
+      Colours and the focused button are set in
+      EvoRmlApp::RenderTwitchFallback; the ones below are the host preview's.
+    -->
+    <div id="fb-content">
+        <img id="fb-mark" src="../icons/icon_app.png"/>
+        <div id="fb-app"></div>  <!-- the app's name, from sce_sys/param.json -->
+        <div id="fb-title">The screens could not start.</div>
+        <div id="fb-message">Close the app and start it again. If it keeps happening, send evo.log to the developer.</div>
+        <div id="fb-buttons">
+            <div id="fb-btn-0" class="fb-btn">Open Settings</div>
+            <div id="fb-btn-1" class="fb-btn">Quit</div>
+        </div>
+    </div>
+</body>
+</rml>

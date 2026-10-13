@@ -1,0 +1,17 @@
+# Host build of the core (cmake -S core -B build)
+/build/
+.cache/
+compile_commands.json
+
+# Local settings, including your console's address
+.env
+.env.local
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

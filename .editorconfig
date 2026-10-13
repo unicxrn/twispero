@@ -1,0 +1,25 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# The player and the scripts use 4 spaces.
+[app/**.{c,h,cpp,hpp,sh,py}]
+indent_size = 4
+
+# The core and the app's Twitch module use 2.
+[{core/**,app/projects/evoplayer/twitch/**}.{c,h,cpp,hpp}]
+indent_size = 2
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+[*.md]
+trim_trailing_whitespace = false

@@ -1,0 +1,92 @@
+Twispero
+Copyright (C) 2026 unicxrn
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It comes with no warranty, as far as the law allows. LICENSE has the
+full text.
+
+Twispero is a modified version of EVO Player, which is itself a modified
+version of ProsperoPlayer. app/projects/evoplayer/NOTICE records both forks
+and what each one changed.
+
+
+PROJECTS IT IS BUILT ON
+
+EVO Player, by sainsaji and the EVO Player contributors. GPL-3.0-or-later.
+  https://github.com/sainsaji/EVO-PLAYER-PS5
+  app/ is a fork of it.
+
+ProsperoPlayer, by KINGDKAK and the ProsperoPlayer contributors.
+GPL-3.0-or-later.
+  https://github.com/KINGDKAK/ProsperoPlayer
+  Where EVO Player started (forked at commit 282b449).
+
+ps5-homebrew-ui, by BlackBearReloaded. GPL-3.0-or-later.
+  https://github.com/blackbearreloaded/ps5-homebrew-ui
+  The UI kit the screens are drawn with: app/third_party/ps5-homebrew-ui,
+  cut down to the library the app compiles. The interface sounds in
+  app/projects/evoplayer/assets/hui/sfx are its "glass" set. Its own notice is
+  app/third_party/ps5-homebrew-ui/THIRD_PARTY_NOTICES.md.
+
+ps5-native-app-boilerplate and ProsperoLight, by BlackBearReloaded.
+GPL-3.0-or-later.
+  https://github.com/blackbearreloaded/ps5-native-app-boilerplate
+  https://github.com/blackbearreloaded/ProsperoLight
+  The tools in app/tools/native-app that link, convert and sign the app. Their
+  ELF converter and FSELF writer are derived from SharpProspero by SvenGDK
+  (GPL-3.0, https://github.com/SvenGDK/SharpProspero).
+
+PS5 Payload SDK, by John Törnblom. GPL-3.0-or-later.
+  https://github.com/ps5-payload-dev/sdk
+  The toolchain. The Docker image fetches it; it isn't in this repository.
+
+
+LIBRARIES IN THE APP
+
+These are linked into eboot.bin. FFmpeg is built from the source tarball in
+app/third_party/ffmpeg by app/scripts/build-ffmpeg.sh. The others come
+prebuilt with the build image, from ps5-payload-dev/pacbrew-repo.
+
+  FFmpeg 7.1.1          LGPL-2.1-or-later, as configured by build-ffmpeg.sh
+                        https://ffmpeg.org
+  dav1d                 BSD-2-Clause
+  RmlUi                 MIT
+  SDL2                  zlib License
+  FreeType              FreeType License
+  OpenSSL               Apache-2.0
+  libxml2               MIT
+  GNU libiconv          LGPL-2.1-or-later
+  libpng                libpng License
+  zlib                  zlib License
+  bzip2                 bzip2 License
+  nlohmann/json         MIT (core/third_party/nlohmann)
+  qrcodegen 1.8.0       MIT, Project Nayuki (core/third_party/qrcodegen)
+  stb_image             public domain (app/projects/evoplayer/stb_image.h)
+
+
+ASSETS
+
+  Inter, Montserrat     SIL Open Font License 1.1
+  Lato (LatoLatin)      SIL Open Font License 1.1
+  DejaVu Sans Mono      Bitstream Vera License; the DejaVu changes are public
+                        domain
+  Lucide icons          ISC; the icons that come from Feather are MIT
+  Mozilla CA roots      MPL-2.0. Made at build time from the build image's
+                        ca-certificates package, for verified TLS on the
+                        Twitch login
+  Twispero logo, tile   Part of this project, drawn by app/tools/gen_brand.py
+  and backgrounds
+
+The licence texts ship inside the app folder: assets/LICENSE.txt (the GPL),
+assets/licenses (qrcodegen, the CA roots, Lucide), assets/fonts and
+assets/hui/fonts (the fonts). In this repository they are under
+app/projects/evoplayer/assets.
+
+
+TRADEMARKS
+
+Twitch is a trademark of Twitch Interactive, Inc. PlayStation and PS5 are
+trademarks of Sony Interactive Entertainment Inc. Twispero isn't affiliated
+with or endorsed by Twitch or Sony.

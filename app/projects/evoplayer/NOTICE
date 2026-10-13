@@ -1,0 +1,95 @@
+Twispero (the Twitch client, its screens and the core library)
+Copyright (C) 2026 unicxrn
+GPL-3.0-or-later, built on EVO Player:
+
+EVO Player
+Copyright (C) 2026 EVO Player contributors
+
+Derived from ProsperoPlayer
+Copyright (C) 2025-2026 ProsperoPlayer contributors
+Upstream: https://github.com/KINGDKAK/ProsperoPlayer
+Forked at commit 282b449.
+
+This is a modified version. Changes made by the EVO Player contributors
+include: 7.1 surround audio output (upstream downmixed everything to
+stereo), flip-completion synchronisation and triple buffering (fixes
+tearing), a rewritten CPU tile swizzle, antialiased rounded-rect UI
+primitives, SDF-generated icons, folder-first browser sorting, UI
+navigation sounds, and framebuffer screenshots. See the git history for
+the full record.
+
+2026-10-12: forked into ps5-twitch as a Twitch client (title PPSA99474);
+Twitch code in projects/evoplayer/twitch and ../core. Stage 6 (2026-10-13)
+removed the EVO features a Twitch app does not use: the file browser, FTP and
+network shares, the media providers and the web UI, subtitles, Surround
+Studio, Media Info, the upscaler, motion smoothing, Deep Blacks, the HDR,
+120 Hz and frame-rate settings, and audio passthrough.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+See the file LICENSE for the full text of the GNU General Public License.
+
+------------------------------------------------------------------------------
+Third-party / derived components
+------------------------------------------------------------------------------
+
+1) ps5-payload-websrv BigApp loader (GPL-3.0-or-later)
+   Author: John Törnblom
+   Used in: prospero_media_standalone/core/ (hbldr, elfldr, pt)
+   Upstream: https://github.com/ps5-payload-dev/websrv
+   (and related ps5-payload projects)
+
+   These modules implement the system BigApp host prepare + ELF replace
+   path. They remain under GPL-3.0-or-later. ProsperoPlayer packaging
+   adapted them for Prospero title IDs and the Prospero media launcher.
+
+2) FFmpeg libraries (linked via PS5 homebrew SDK builds)
+   Used for demux/decode/resample/scale in the player.
+   FFmpeg is typically LGPL/GPL depending on how it was configured.
+   Your SDK’s libav* binaries determine the exact FFmpeg license terms;
+   check your SDK / FFmpeg build documentation when redistributing.
+
+3) Sony PlayStation 5 system libraries (Sce*)
+   Proprietary. Linked only as system APIs on a jailbroken console.
+   Not redistributed as source in this repository.
+
+4) Mozilla CA root store (MPL-2.0)
+   Used in: addons/src/evo_ca_bundle.c, generated at build time by
+   tools/gen_ca_bundle.py from the build image's ca-certificates bundle.
+   The roots evo_net trusts for verified TLS (the Twitch login).
+   Licence text and where to get the source: assets/licenses/ca-certificates.txt
+
+5) qrcodegen 1.8.0 (MIT)
+   Author: Project Nayuki
+   Used in: ../../../core/third_party/qrcodegen (the QR code on the Twitch
+   login screen)
+   Upstream: https://github.com/nayuki/QR-Code-generator
+   Vendored with one change: no <sstream>, to match the PS5 app's build.
+   Licence text: assets/licenses/qrcodegen.txt
+
+6) Fonts, built into the app (eboot.bin)
+   Lato (LatoLatin) - SIL Open Font License 1.1
+     the RmlUi screens; licence text: assets/fonts/Lato-OFL.txt
+   Inter and Montserrat - SIL Open Font License 1.1
+     the kit screens; licence texts: assets/hui/fonts/Inter-LICENSE.txt,
+     assets/hui/fonts/Montserrat-LICENSE.txt
+   DejaVu Sans Mono - Bitstream Vera License (DejaVu changes public domain)
+     the kit's monospaced figures; licence text:
+     assets/hui/fonts/DejaVu-LICENSE.txt
+
+7) Lucide icons (ISC; the icons derived from Feather are MIT)
+   Author: Lucide Icons and Contributors; Feather: Cole Bemis
+   Used in: the app's line icons (assets/icons, built into eboot.bin)
+   Upstream: https://github.com/lucide-icons/lucide
+   Licence text: assets/licenses/lucide.txt
+
+------------------------------------------------------------------------------
+Trademarks
+------------------------------------------------------------------------------
+
+PlayStation and PS5 are trademarks of Sony Interactive Entertainment Inc.
+Twitch is a trademark of Twitch Interactive, Inc.
+This project is not affiliated with or endorsed by Sony or Twitch.

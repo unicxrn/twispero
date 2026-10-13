@@ -1,0 +1,129 @@
+<rml>
+<head>
+    <link type="text/rcss" href="playback.rcss"/>
+</head>
+<body id="playback-hud">
+    <!-- Top Header Bar: what plays, and the quality playing -->
+    <div id="top-scrim">
+        <div id="title-block">
+            <div id="media-title"></div>
+            <div id="media-meta"></div>
+        </div>
+        <div id="badge-rack">
+            <span id="badge-quality" class="badge-quality"></span>
+        </div>
+    </div>
+
+    <!-- No picture (Twitch's "Audio only"): the channel on a card -->
+    <div id="music-view">
+        <div id="music-card">
+            <div id="music-art"></div>
+            <div id="music-lines">
+                <div id="music-title"></div>
+                <div id="music-state">AUDIO ONLY</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Center Play/Pause & Scrubbing Overlay -->
+    <div id="center-overlay">
+        <div id="scrub-capsule">
+            <img id="scrub-thumb" src=""/>
+            <div id="scrub-readout">
+                <span id="scrub-label">JUMP TO</span>
+                <span id="scrub-time">00:00:00</span>
+            </div>
+        </div>
+        <div id="pause-badge">
+            <span id="pause-label">PAUSED</span>
+        </div>
+        <div id="loading-badge">
+            <div id="loading-spinner"></div>
+            <span id="loading-label">LOADING</span>
+        </div>
+    </div>
+
+    <!-- Dev FPS pill (#81) -->
+    <div id="fps-pill"><span id="fps-value">0 FPS</span></div>
+
+    <!-- Playback diagnostic HUD (#81 / #63): live stream lines + telemetry graphs -->
+    <div id="stats-hud">
+        <div class="stats-title">PLAYBACK DIAGNOSTICS</div>
+        <div id="stats-video" class="stats-line">--</div>
+        <div id="stats-audio" class="stats-line">--</div>
+        <div id="stats-perf" class="stats-line">--</div>
+        <div id="stats-queues" class="stats-line">--</div>
+        <div id="stats-clocks" class="stats-line">--</div>
+        <div class="stats-sep"></div>
+        <div class="graph-row">
+            <span class="graph-label text-cyan">GPU</span>
+            <div id="graph-gpu" class="graph"></div>
+            <span id="graph-gpu-val" class="graph-val text-cyan">--</span>
+        </div>
+        <div class="graph-row">
+            <span class="graph-label text-amber">RAM</span>
+            <div id="graph-ram" class="graph"></div>
+            <span id="graph-ram-val" class="graph-val text-amber">--</span>
+        </div>
+        <div class="graph-row">
+            <span class="graph-label text-green">CPU</span>
+            <div id="graph-cpu" class="graph"></div>
+            <span id="graph-cpu-val" class="graph-val text-green">--</span>
+        </div>
+    </div>
+
+    <!-- Bottom bar: the timeline (not live) and the keys -->
+    <div id="bottom-scrim">
+        <!-- Progress Bar Timeline -->
+        <div id="progress-container">
+            <div id="progress-track">
+                <div id="progress-fill">
+                    <div id="progress-thumb"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Time Row -->
+        <div id="time-row">
+            <span id="time-current">00:00:00</span>
+            <span id="time-duration">00:00:00</span>
+        </div>
+
+        <!-- The keys -->
+        <div id="controls-row">
+            <div class="control-item" id="item-playpause">
+                <div class="glyph-badge"><img src="icons/btn_cross.png" class="glyph-badge-img"/></div>
+                <span id="label-playpause" class="control-label">PAUSE</span>
+            </div>
+            <div class="control-item" id="item-seek">
+                <div class="glyph-badge"><img src="icons/btn_dpad.png" class="glyph-badge-img"/></div>
+                <span class="control-label">SKIP 10 SEC</span>
+            </div>
+            <div class="control-item" id="item-quality">
+                <span class="btn-tag">R2</span>
+                <span class="control-label">QUALITY</span>
+            </div>
+            <div class="control-item" id="item-chat">
+                <span class="btn-tag">R1</span>
+                <span id="label-chat" class="control-label">CHAT: OFF</span>
+            </div>
+            <div class="control-item" id="item-triangle">
+                <div class="glyph-badge"><img src="icons/btn_triangle.png" class="glyph-badge-img"/></div>
+                <span id="label-triangle" class="control-label">ASPECT: FIT</span>
+            </div>
+            <div class="control-item" id="item-square">
+                <div class="glyph-badge"><img src="icons/btn_square.png" class="glyph-badge-img"/></div>
+                <span class="control-label">CLIP</span>
+            </div>
+            <div class="control-item" id="item-stats">
+                <span class="btn-tag">OPTIONS</span>
+                <span class="control-label">STATS</span>
+            </div>
+            <div class="control-item">
+                <div class="glyph-badge"><img src="icons/btn_circle.png" class="glyph-badge-img"/></div>
+                <span class="control-label">BACK</span>
+            </div>
+        </div>
+    </div>
+</body>
+</rml>

@@ -1,0 +1,19 @@
+# libSceWebBrowserDialog - added for #101 (a provider's own web UI in the
+# system browser), which stage 6 removed.
+#
+# No SDK stub .so exists for it. Names from SharpProspero
+# Interop/Dialog/WebBrowserDialog.cs, the console-tested binding.
+#
+# Nothing opens the browser any more, but the module stays NEEDED with the six
+# imports the stage 5 build booted with on 12.70: src/evo_prx_keep.c calls each
+# one, in code that never runs. Without those calls the module would be NEEDED
+# with no imports at all, which the console has never loaded, and a module the
+# loader rejects leaves no log (CE-108255-1). Every name here must stay
+# referenced there, or package-app.sh's dead-import check stops the build. If a
+# build does not start at all, suspect this file first.
+sceWebBrowserDialogInitialize
+sceWebBrowserDialogOpen
+sceWebBrowserDialogUpdateStatus
+sceWebBrowserDialogGetResult
+sceWebBrowserDialogClose
+sceWebBrowserDialogTerminate
