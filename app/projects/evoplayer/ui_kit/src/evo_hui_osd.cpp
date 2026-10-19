@@ -242,8 +242,10 @@ const OsdScreen::Lines &OsdScreen::lines(const Context &ctx) const
     else
         l.watching = viewers_ >= 0 ? format_viewers(viewers_) + " watching" : std::string();
 
-    l.vod_title = fit(fonts.display, title_, 44, 1500);
-    l.vod_meta = fit(fonts.regular, meta_, 22, 1500);
+    /* Through drawable() like every other line here: a character the font
+     * lacks would otherwise come out as a box. */
+    l.vod_title = fit(fonts.display, drawable(fonts.display, title_), 44, 1500);
+    l.vod_meta = fit(fonts.regular, drawable(fonts.regular, meta_), 22, 1500);
     return l;
 }
 
@@ -326,9 +328,16 @@ void OsdScreen::draw_title(DrawList &list, const Context &ctx) const
 {
     const ui::Fonts &fonts = ctx.fonts;
     const Lines &l = lines(ctx);
-    ui::text(list, fonts.display, l.vod_title, kMargin, 110, 44, kWhite);
+    /* No title left to draw (all Japanese, say): the line under it moves up
+     * into its place rather than sitting under a blank one. */
+    float meta_y = 110;
+    if (!l.vod_title.empty())
+    {
+        ui::text(list, fonts.display, l.vod_title, kMargin, 110, 44, kWhite);
+        meta_y = 148;
+    }
     if (!l.vod_meta.empty())
-        ui::text(list, fonts.regular, l.vod_meta, kMargin, 148, 22, kWhite.with_alpha(0.7f));
+        ui::text(list, fonts.regular, l.vod_meta, kMargin, meta_y, 22, kWhite.with_alpha(0.7f));
 }
 
 void OsdScreen::draw_quality(DrawList &list, const Context &ctx) const
@@ -405,6 +414,8 @@ void OsdScreen::draw_bottom(DrawList &list, const Context &ctx) const
         hints[n++] = {ui::Button::r1, chat_hint(raw_.chat_mode)};
         if (raw_.can_chat)
             hints[n++] = {ui::Button::triangle, "Send message"};
+        if (raw_.can_chat && raw_.chat_mode != EVO_OSD_CHAT_OFF)
+            hints[n++] = {ui::Button::l1, "Reply"};
         if (raw_.can_clip)
             hints[n++] = {ui::Button::square, "Clip"};
     }

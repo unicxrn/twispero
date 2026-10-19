@@ -50,7 +50,7 @@ constexpr float kView = tw::kView;
 
 /* The hero is short enough that both rows' titles show over the hint band,
  * with the top of the category art under the second one. */
-const Rect kHeroArt{1024, 64, 800, 450};
+const Rect kHeroArt{EVO_HUI_TWITCH_HERO_X, EVO_HUI_TWITCH_HERO_Y, EVO_HUI_TWITCH_HERO_W, EVO_HUI_TWITCH_HERO_H};
 constexpr float kHeroTextW = 680.0f;
 /* The text block sits on the picture's bottom edge: Watch ends where the
  * picture ends, and the lines stack up from there. */
@@ -110,6 +110,13 @@ HeroText hero_text(int title_lines, bool has_game)
     const float last = has_game ? t.game_y - 50.0f : t.game_y;
     t.title_y = last - kHeroTitleLead * static_cast<float>(std::max(title_lines, 1) - 1);
     t.name_y = t.title_y - 66.0f;
+    if (title_lines <= 0)
+    {
+        /* No title the fonts can draw (all Japanese, say): the name closes
+         * up onto the category as it would onto the title, or sits a little
+         * clear of the button (it is much bigger than a title line). */
+        t.name_y = has_game ? t.game_y - 66.0f : t.game_y - 16.0f;
+    }
     t.pill_y = t.name_y - 106.0f;
     return t;
 }
@@ -251,6 +258,10 @@ void TwitchHomeScreen::set(const evo_hui_twitch_home_params_t &p)
     recent_col_ = std::clamp(p.recent_col, 0, std::max(0, recent_count() - 1));
     starting_ = str(p.starting_login);
     starting_id_ = str(p.starting_id);
+    live_picture_ = p.live_picture != 0;
+    streams_title_ = p.streams_language && p.streams_language[0]
+                         ? std::string("Popular now \xC2\xB7 ") + p.streams_language
+                         : std::string("Popular now");
 }
 
 void TwitchHomeScreen::enter()
@@ -555,7 +566,8 @@ void TwitchHomeScreen::draw_hero_skeleton(DrawList &list, const Context &ctx, fl
     draw_skeleton(list, ctx, kHeroButton, 32, alpha);
 }
 
-void TwitchHomeScreen::draw_hero(DrawList &list, const Context &ctx, float alpha, std::uint32_t tex) const
+void TwitchHomeScreen::draw_hero(DrawList &list, const Context &ctx, float alpha, std::uint32_t tex,
+                                 bool live) const
 {
     if (streams_.empty() || alpha <= 0.01f)
         return;
@@ -564,21 +576,29 @@ void TwitchHomeScreen::draw_hero(DrawList &list, const Context &ctx, float alpha
     const TwitchStream &s = streams_[0];
     list.push_opacity(alpha);
 
-    /* The picture: the large one when it has arrived, the card's until then. */
+    /* The picture: the large one when it has arrived, the card's until then.
+     * A live picture is the video quad under this page, so nothing opaque
+     * goes over that rect. */
     const Rect art = kHeroArt;
-    list.shadow({art.x, art.y + 28, art.w, art.h}, 24, 48, Color::rgb(0x000000, 0.55f));
-    const TwitchPicture &pic = hero_art_.px ? hero_art_ : s.thumb;
-    if (hero_motion_.art_in < 1.0f)
-        draw_skeleton(list, ctx, art, 16);
-    if (tex)
-        list.image(tex, art, cover_uv(pic.w, pic.h, art.w, art.h), kWhite.with_alpha(hero_motion_.art_in), 16);
-    /* The picture's left edge melts into the page, so the text beside it
-     * reads as part of one block. */
-    list.gradient_rect_h({art.x, art.y, art.w * 0.45f, art.h}, 16, p.bg_top.with_alpha(0.86f),
-                         p.bg_top.with_alpha(0.0f));
-    list.gradient_rect({art.x, art.y + art.h * 0.6f, art.w, art.h * 0.4f}, 16, kClear,
-                       Color::rgb(0x000000, 0.32f));
-    list.bordered_rect(art, 16, kClear, 1.5f, kWhite.with_alpha(0.08f));
+    if (!live)
+    {
+        list.shadow({art.x, art.y + 28, art.w, art.h}, 24, 48, Color::rgb(0x000000, 0.55f));
+        const TwitchPicture &pic = hero_art_.px ? hero_art_ : s.thumb;
+        if (hero_motion_.art_in < 1.0f)
+            draw_skeleton(list, ctx, art, 16);
+        if (tex)
+            list.image(tex, art, cover_uv(pic.w, pic.h, art.w, art.h), kWhite.with_alpha(hero_motion_.art_in), 16);
+        /* The picture's left edge melts into the page, so the text beside it
+         * reads as part of one block. */
+        list.gradient_rect_h({art.x, art.y, art.w * 0.45f, art.h}, 16, p.bg_top.with_alpha(0.86f),
+                             p.bg_top.with_alpha(0.0f));
+        list.gradient_rect({art.x, art.y + art.h * 0.6f, art.w, art.h * 0.4f}, 16, kClear,
+                           Color::rgb(0x000000, 0.32f));
+        /* A hairline on the still. Over the live picture it would be blended
+         * again each frame onto a buffer that is not cleared, so the rim
+         * flickers between two brightnesses. */
+        list.bordered_rect(art, 16, kClear, 1.5f, kWhite.with_alpha(0.08f));
+    }
 
     /* Who, what, where. */
     const float x = kLeft;
@@ -725,7 +745,7 @@ void TwitchHomeScreen::draw_streams(DrawList &list, const Context &ctx, float al
     const Palette &p = ctx.palette;
     list.push_opacity(alpha);
     const float title_y = kRow1Title + shift();
-    ui::text(list, fonts.semibold, "Popular now", kLeft, title_y, 30, p.text);
+    ui::text(list, fonts.semibold, streams_title_, kLeft, title_y, 30, p.text);
     const int rn = row_count();
     if (!rail_focused_ && focus_row_ == EVO_HUI_TWITCH_ROW_STREAMS && rn > 0)
         draw_row_counter(list, ctx, title_y, stream_col_ + 1, rn);
@@ -733,7 +753,7 @@ void TwitchHomeScreen::draw_streams(DrawList &list, const Context &ctx, float al
     if (rn == 0 && streams_status_ != EVO_HUI_TWITCH_LOADING)
     {
         /* The hero has the only stream there is. */
-        draw_row_note(list, ctx, "Popular now", title_y, "Nobody else is live right now", "to refresh");
+        draw_row_note(list, ctx, streams_title_.c_str(), title_y, "Nobody else is live right now", "to refresh");
         list.pop_opacity();
         return;
     }
@@ -837,13 +857,17 @@ void TwitchHomeScreen::draw_categories(DrawList &list, const Context &ctx, float
 void TwitchHomeScreen::draw(DrawList &list, const Context &ctx) const
 {
     const float page = page_.value;
+    /* The video quad is fixed on screen. Only leave the hole while the hero
+     * sits where that quad is: page at rest, entrance finished. */
+    const bool live = live_picture_ && std::fabs(page) < 2.0f && tween::clamp01(age_ / 0.6f) > 0.98f;
 
     /* The hero's picture, washed in behind everything (and drawn again as the
-     * hero itself). */
+     * hero itself). A live picture takes that rect instead. */
     std::uint32_t hero_tex = 0;
-    if (!streams_.empty())
+    if (!streams_.empty() && !live)
         hero_tex = twitch_texture(ctx, hero_art_.px ? hero_art_ : streams_[0].thumb);
-    draw_backdrop(list, ctx, hero_tex, 0.45f * hero_motion_.art_in);
+    const Rect hole = live ? Rect{kHeroArt.x, kHeroArt.y - page, kHeroArt.w, kHeroArt.h} : Rect{};
+    draw_backdrop(list, ctx, hero_tex, 0.45f * hero_motion_.art_in, hole);
 
     /* A list with nothing in it once it has landed: failed, or nobody live. */
     const bool streams_none = streams_.empty() && streams_status_ != EVO_HUI_TWITCH_LOADING;
@@ -882,7 +906,7 @@ void TwitchHomeScreen::draw(DrawList &list, const Context &ctx) const
                 const float ready = streams_in_.value;
                 if (ready < 0.99f)
                     draw_hero_skeleton(list, ctx, in * away * (1.0f - ready));
-                draw_hero(list, ctx, in * away * ready, hero_tex);
+                draw_hero(list, ctx, in * away * ready, hero_tex, live);
             }
             list.pop_transform();
         }

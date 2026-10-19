@@ -2,15 +2,21 @@
 
 #include <algorithm>
 
+#include "twitch/browse.hpp"
 #include "twitch/error.hpp"
 #include "json_helpers.hpp"
 
 namespace twitch {
 
-const char* const kTopStreamsQuery =
-    "query TopStreams($first: Int!) { streams(first: $first) { edges { node { "
-    "id title viewersCount previewImageURL(width: 440, height: 248) "
-    "broadcaster { login displayName } game { name } } } } }";
+// The query in two halves, split where a language filter goes; the plain
+// one is the two together.
+#define TOP_STREAMS_HEAD "query TopStreams($first: Int!) { streams(first: $first"
+#define TOP_STREAMS_TAIL                                                   \
+  ") { edges { node { "                                                    \
+  "id title viewersCount previewImageURL(width: 440, height: 248) "        \
+  "broadcaster { login displayName } game { name } } } } }"
+
+const char* const kTopStreamsQuery = TOP_STREAMS_HEAD TOP_STREAMS_TAIL;
 
 std::vector<StreamInfo> parseTopStreams(const nlohmann::json& data) {
   auto streams = data.find("streams");
@@ -41,11 +47,13 @@ std::vector<StreamInfo> parseTopStreams(const nlohmann::json& data) {
 // Twitch quirk (seen live, 2026-10): streams(first: n) returns n-1 edges, so
 // first: 1 gives none at all. Ask for five more than wanted, capped at 30 (the
 // most Twitch accepts), and trim the answer back to `first`.
-std::vector<StreamInfo> topStreams(GqlClient& gql, int first) {
+std::vector<StreamInfo> topStreams(GqlClient& gql, int first, const std::string& language) {
   const int want = first > 0 ? first : 0;
   const int ask = std::min(want, 25) + 5;  // never want + 5: that overflows near INT_MAX
-  std::vector<StreamInfo> streams =
-      parseTopStreams(gql.query(kTopStreamsQuery, nlohmann::json{{"first", ask}}));
+  // A language goes in as an enum, never as a variable: Twitch rejects a
+  // string there. With none it is kTopStreamsQuery.
+  const std::string query = TOP_STREAMS_HEAD + browseLanguageOption(language) + TOP_STREAMS_TAIL;
+  std::vector<StreamInfo> streams = parseTopStreams(gql.query(query, nlohmann::json{{"first", ask}}));
   if (streams.size() > static_cast<size_t>(want)) streams.resize(static_cast<size_t>(want));
   return streams;
 }

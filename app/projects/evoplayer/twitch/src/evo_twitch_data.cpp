@@ -55,6 +55,7 @@
 #include "evo_boot_log.h"
 #include "evo_twitch.h"
 #include "evo_twitch_auth.h"
+#include "evo_twitch_settings.h"
 #include "evo_twitch_internal.h"
 #include "twitch/app.hpp"
 #include "twitch/browse.hpp"
@@ -437,7 +438,10 @@ std::vector<VideoCard> videoCards(const std::vector<twitch::VideoCard>& in) {
     c.id = v.id;
     c.title = v.title;
     c.game = v.gameName;
-    c.thumbUrl = v.thumbnailUrl;
+    /* A broadcast still being recorded has the channel's live preview
+     * (fetchChannelVideos); it moves on every 5 minutes, as on a live card.
+     * Any other thumbnail comes back as it is. */
+    c.thumbUrl = twitch::liveThumbnailUrl(v.thumbnailUrl, now);
     c.age = twitch::ageText(v.publishedAt, now);
     c.published = v.publishedAt;
     c.seconds = v.lengthSeconds;
@@ -586,7 +590,7 @@ void runJob(Job& job, FollowedLiveCache& cache) noexcept {
     case kHomeStreams:
       job.error = runPart(job, "", [&] {
         twitch::GqlClient gql(evoTwitchHttp());
-        job.streams = streamCards(twitch::topStreams(gql, kHomeStreamCount));
+        job.streams = streamCards(twitch::topStreams(gql, kHomeStreamCount, job.arg));
         return job.streams.size();
       });
       break;
@@ -600,8 +604,14 @@ void runJob(Job& job, FollowedLiveCache& cache) noexcept {
     case kCategoryStreams:
       job.error = runPart(job, "", [&] {
         twitch::GqlClient gql(evoTwitchHttp());
-        job.streams =
-            streamCards(twitch::categoryStreams(gql, job.arg, kCategoryStreamCount));
+        std::string name = job.arg;
+        std::string lang;
+        const std::size_t split = job.arg.find('\n');
+        if (split != std::string::npos) {
+          name = job.arg.substr(0, split);
+          lang = job.arg.substr(split + 1);
+        }
+        job.streams = streamCards(twitch::categoryStreams(gql, name, kCategoryStreamCount, lang));
         return job.streams.size();
       });
       break;
@@ -1075,9 +1085,22 @@ const Result<std::vector<StreamCard>>& followed_live() noexcept { return state()
 const Result<std::vector<ChannelCard>>& followed_channels() noexcept { return state().followedChannels; }
 const Result<ChannelPage>& now_playing() noexcept { return state().nowPlaying; }
 
-void request_home_streams() noexcept { request(kHomeStreams, std::string()); }
+void request_home_streams() noexcept {
+  try {
+    request(kHomeStreams, settings().browseLanguage);
+  } catch (...) {
+    evo_log_error("twitch: data: home streams request failed");
+  }
+}
 void request_home_categories() noexcept { request(kHomeCategories, std::string()); }
-void request_category_streams(const std::string& name) noexcept { request(kCategoryStreams, name); }
+void request_category_streams(const std::string& name) noexcept {
+  try {
+    const std::string& lang = settings().browseLanguage;
+    request(kCategoryStreams, lang.empty() ? name : name + "\n" + lang);
+  } catch (...) {
+    evo_log_error("twitch: data: category streams request failed");
+  }
+}
 void request_channel(const std::string& login) noexcept { request(kChannel, login); }
 void request_now_playing(const std::string& login) noexcept { request(kNowPlaying, login); }
 void request_followed_live(const std::string& userId) noexcept { requestFollowed(kFollowedLive, userId); }

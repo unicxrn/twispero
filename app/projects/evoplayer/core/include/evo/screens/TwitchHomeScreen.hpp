@@ -25,6 +25,9 @@ namespace evo {
  * any; Cross picks one up where it was left. Owns the cursor and asks the
  * data service (twitch/include/evo_twitch_data.h) for the lists; the kit
  * screen (ui_kit/src/evo_hui_twitch_home.cpp) draws what render() hands it.
+ * The hero plays its stream live and muted in its picture (syncPreview(),
+ * Settings > Twitch > Live preview on Home); Cross on the hero opens it.
+ * "Popular now" is in the language picked on Browse, and says which.
  *
  * Up/Down move between the hero and the rows, Left/Right within a row (Left
  * at the start of a row opens the rail), Cross plays a stream or a video or
@@ -38,6 +41,7 @@ public:
 
     ScreenId getScreenId() const override { return ScreenId::TwitchHome; }
     void onEnter() override;
+    void onExit() override;
     void update(double deltaMs) override;
     bool handleInput(uint32_t pressed, uint32_t held, uint32_t released) override;
     void render(uint32_t* framebuffer, int width, int height) override;
@@ -49,6 +53,15 @@ private:
     /* Notices a login, a logout or another user: a new user's followed live
      * channels are asked for. */
     void followLogin();
+    /* The hero's muted live picture, while this screen is up: from
+     * kPreviewSettleMs after it opens until the pad has been left alone for
+     * kPreviewIdleMs (evo_twitch_preview()). */
+    void syncPreview();
+    static constexpr unsigned long long kPreviewSettleMs = 1000;
+    static constexpr unsigned long long kPreviewIdleMs = 90000;
+    unsigned long long m_enteredMs = 0;
+    unsigned long long m_lastInputMs = 0;
+    std::string m_streamsLanguage;  /* Popular now's, kept for the kit's pointer */
     /* Asks for the lists that are missing, failed or older than a minute;
      * with force, for all of them. */
     void refresh(bool force);

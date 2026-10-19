@@ -3,6 +3,7 @@
 #include "evo/screens/TwitchScreenData.hpp"
 #include "evo/Application.hpp"
 #include "evo_rmlui_bridge.h"
+#include "evo_twitch_settings.h"
 
 #include <algorithm>
 #include <cstring>
@@ -13,6 +14,39 @@ namespace {
 constexpr int kCols = EVO_HUI_TWITCH_BROWSE_COLS;
 } // namespace
 
+namespace twitch_screen {
+
+void LanguageStepper::step(bool next) {
+    const std::string from = shown();
+    m_code = next ? evo_twitch::next_browse_language(from) : evo_twitch::prev_browse_language(from);
+    m_pending = true;
+    m_dueMs = evo_twitch::data_now_ms() + kDelayMs;
+    evo_feedback(EVO_FB_MOVE);
+    const std::string label = evo_twitch::browse_language_label(m_code);
+    toast("Stream language", label.c_str());
+}
+
+std::string LanguageStepper::shown() const {
+    return m_pending ? m_code : evo_twitch::settings().browseLanguage;
+}
+
+bool LanguageStepper::apply(bool force) {
+    if (!m_pending || (!force && evo_twitch::data_now_ms() < m_dueMs)) return false;
+    m_pending = false;
+    if (m_code == evo_twitch::settings().browseLanguage) return false;
+    evo_twitch::set_browse_language(m_code);
+    evo_twitch::save_settings(evo_twitch::settings());
+    evo_twitch::request_home_streams();
+    return true;
+}
+
+std::string languageNote(const std::string& code) {
+    if (code.empty()) return std::string();
+    return evo_twitch::browse_language_label(code) + " streams";
+}
+
+} // namespace twitch_screen
+
 TwitchBrowseScreen::TwitchBrowseScreen()
     : StatefulScreen("TwitchBrowseScreen") {
 }
@@ -21,6 +55,16 @@ void TwitchBrowseScreen::onEnter() {
     StatefulScreen::onEnter();
     m_refreshToast.sync(evo_twitch::home_categories());
     refresh(false);
+}
+
+void TwitchBrowseScreen::onExit() {
+    m_language.apply(true);
+    StatefulScreen::onExit();
+}
+
+void TwitchBrowseScreen::update(double deltaMs) {
+    StatefulScreen::update(deltaMs);
+    m_language.apply(false);
 }
 
 void TwitchBrowseScreen::refresh(bool force) {
@@ -84,6 +128,11 @@ bool TwitchBrowseScreen::handleInput(uint32_t pressed, uint32_t held, uint32_t r
         refresh(true);
         return true;
     }
+    /* L1 and R1 step the stream language (see the class comment). */
+    if (pressed & (PadButtons::L1 | PadButtons::R1)) {
+        m_language.step((pressed & PadButtons::R1) != 0);
+        return true;
+    }
     if (pressed & PadButtons::Circle) {
         evo_feedback(EVO_FB_CANCEL);
         if (auto sm = Application::getInstance().getScreenManager()) sm->navigateBack(ScreenId::TwitchHome);
@@ -121,6 +170,9 @@ void TwitchBrowseScreen::render(uint32_t* framebuffer, int width, int height) {
     m_pictures.endFrame();
     p.cursor = m_cursor;
     p.rail_focused = railFocused ? 1 : 0;
+    /* The categories are everyone's; the language is the streams' in them. */
+    m_languageLine = twitch_screen::languageNote(m_language.shown());
+    p.language = m_languageLine.c_str();
 
 #if defined(EVO_AGC_DEVICE)
     evo_hui_update_twitch_browse(&p);

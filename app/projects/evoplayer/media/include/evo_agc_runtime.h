@@ -110,6 +110,10 @@ int  evo_agc_runtime_is_active(void);
 void evo_agc_runtime_frame_begin(void);
 void evo_agc_runtime_frame_end(void);
 void evo_agc_runtime_present(void);
+/* 0 the menus (every frame cleared), 1 the player (a buffer that held only
+ * video is not cleared), 2 a video picture inside a menu (Home's live
+ * picture): like 1, but going into it doesn't wipe the buffer on screen.
+ * Main thread. */
 void evo_agc_runtime_set_player_mode(int is_player);
 /* Mark the current backbuffer as carrying composited UI, so the next frame that
  * reuses it clears first instead of stacking OSD/subtitle pixels. */

@@ -169,7 +169,9 @@ InfoText info_text(int title_lines, bool has_game, bool has_tags = false)
     const float lines = static_cast<float>(std::max(title_lines, 1) - 1);
     const float pill_to_title = 29.0f + 58.0f; /* pill, then the title's baseline */
     const float title_to_last = kTitleLead * lines;
-    const float last_to_game = has_game ? 50.0f : 0.0f;
+    /* No title the fonts can draw (all Japanese, say): the category takes
+     * its line rather than leaving it blank. */
+    const float last_to_game = has_game && title_lines > 0 ? 50.0f : 0.0f;
     const float game_to_tags = 22.0f;
     const float game_to_watch = has_tags ? game_to_tags + kTagH + 30.0f : 44.0f;
     const float height = pill_to_title + title_to_last + last_to_game + game_to_watch + kWatchH;

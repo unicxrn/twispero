@@ -129,7 +129,8 @@ std::uint32_t twitch_texture(const Context &ctx, const TwitchPicture &pic);
 std::string drawable(const hui::ui::FontRef &font, const std::string &text);
 
 /* text broken into at most max_lines lines no wider than width; the last
- * line ends in an ellipsis when the rest does not fit. */
+ * line ends in an ellipsis when the rest does not fit. No lines at all for
+ * empty text, so a title drawable() emptied leaves no gap. */
 std::vector<std::string> fit_lines(const hui::ui::FontRef &font, const std::string &text, float size, float width,
                                    int max_lines);
 
@@ -415,7 +416,8 @@ class TwitchHomeScreen
     float page_target() const;
 
     /* hero_tex: the hero picture's texture, looked up once per draw. */
-    void draw_hero(hui::gfx::DrawList &list, const Context &ctx, float alpha, std::uint32_t hero_tex) const;
+    void draw_hero(hui::gfx::DrawList &list, const Context &ctx, float alpha, std::uint32_t hero_tex,
+                   bool live) const;
     void draw_hero_skeleton(hui::gfx::DrawList &list, const Context &ctx, float alpha) const;
     void draw_followed(hui::gfx::DrawList &list, const Context &ctx, float alpha) const;
     void draw_recent(hui::gfx::DrawList &list, const Context &ctx, float alpha) const;
@@ -429,6 +431,8 @@ class TwitchHomeScreen
     std::vector<TwitchStream> streams_;
     std::vector<TwitchCategory> categories_;
     TwitchPicture hero_art_;
+    bool live_picture_ = false;
+    std::string streams_title_ = "Popular now";
     int focus_row_ = EVO_HUI_TWITCH_ROW_HERO;
     int stream_col_ = 0, category_col_ = 0;
     bool rail_focused_ = false;
@@ -492,6 +496,7 @@ class TwitchBrowseScreen
 
     int status_ = EVO_HUI_TWITCH_LOADING;
     std::string error_;
+    std::string language_;
     std::vector<TwitchCategory> categories_;
     int cursor_ = 0;
     bool rail_focused_ = false;
@@ -527,6 +532,7 @@ class TwitchCategoryScreen
 
     std::string name_;
     int viewers_ = -1;
+    std::string language_;
     FittedText name_fit_, empty_fit_;
     TwitchPicture art_;
     CardMotion art_motion_;
@@ -904,6 +910,7 @@ struct ChatLine
     std::string name, login, system_text;
     std::string reply_to, reply_login; /* a reply's parent; "" otherwise */
     bool mention = false;              /* drawn on a tint; may change while the line stays */
+    bool selected = false;             /* the line a reply will answer; a bar down its left */
     std::uint32_t color = 0xffffff;
     std::vector<TwitchPicture> badges;
     std::vector<ChatSegment> segments;
@@ -913,7 +920,7 @@ struct ChatLine
 /* Chat in the player, drawn over the video: a panel beside it (side mode)
  * or a dim column over its right side (overlay mode). Lines never change
  * once added, so each is laid out once and kept until it leaves the params.
- * No cursor: chat only shows. */
+ * A selected line (Up/Down in the player) is the one L1 replies to. */
 class TwitchChatScreen
 {
   public:
@@ -931,6 +938,7 @@ class TwitchChatScreen
     int text_size_ = EVO_HUI_TWITCH_CHAT_TEXT_MEDIUM;
     hui::gfx::Rect video_; /* on the canvas; w == 0 when not known */
     std::string channel_;
+    bool paused_ = false; /* a line is picked to reply to: the header says chat is paused */
     FittedText channel_fit_;
     std::vector<ChatLine> lines_; /* oldest first, as in the params */
     std::vector<ChatLine> merged_; /* set()'s scratch, kept for its capacity */

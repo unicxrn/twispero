@@ -100,13 +100,15 @@ inline constexpr int kChatSendQueueMax = 5;
 // Queues text for channel's chat (a login), sent as the user logged in now
 // (auth_view()); a message still waiting when someone else logs in isn't
 // sent ("Message not sent: you switched Twitch accounts"). Line breaks and
-// tabs become spaces. Returns nullptr when it was
-// queued, and also for a blank message, which is simply not sent. Otherwise
-// the toast saying why not: "Message not sent: log in under Settings to
-// chat", "Message not sent: wait for the last ones to go out" (already
-// kChatSendQueueMax), "Message not sent: sending isn't available in this
-// build". Main thread only.
-const char* chat_send(const std::string& channel, const std::string& text) noexcept;
+// tabs become spaces. replyId, when not empty, is Twitch's id of the line
+// this message answers (Helix reply_parent_message_id). Returns nullptr when
+// it was queued, and also for a blank message, which is simply not sent.
+// Otherwise the toast saying why not: "Message not sent: log in under
+// Settings to chat", "Message not sent: wait for the last ones to go out"
+// (already kChatSendQueueMax), "Message not sent: sending isn't available in
+// this build". Main thread only.
+const char* chat_send(const std::string& channel, const std::string& text,
+                      const std::string& replyId = {}) noexcept;
 
 // The notice of a message that failed, oldest first: moves it to *out and
 // returns true. A notice the same as the one waiting before it isn't kept

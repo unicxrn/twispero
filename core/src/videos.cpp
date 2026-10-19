@@ -121,6 +121,18 @@ std::string buildCategoryClipsQuery(ClipPeriod period) {
          "curator { displayName } game { name } broadcaster { login displayName } } } } } }";
 }
 
+// A broadcast Twitch is still recording has a generic "processing" picture for a thumbnail
+// (see the note at the top). The channel's live preview shows that same broadcast, at the size
+// the cards draw; for a channel that has gone offline since, the CDN redirects it to its own
+// offline picture.
+bool isProcessingThumbnail(const std::string& url) {
+  return url.find("/_404/404_processing") != std::string::npos;
+}
+
+std::string livePreviewUrl(const std::string& login) {
+  return "https://static-cdn.jtvnw.net/previews-ttv/live_user_" + login + "-440x248.jpg";
+}
+
 // ---------------------------------------------------------------------------
 // Node + connection parsing
 // ---------------------------------------------------------------------------
@@ -241,6 +253,8 @@ VideoPage fetchChannelVideos(GqlClient& gql, const std::string& login, VideoType
   const nlohmann::json& user = requireUser(data, normalized);
 
   auto [cards, cursor] = parsePagedEdges<VideoCard>(user, "videos", "user.videos", videoCardFromNode);
+  for (VideoCard& card : cards)
+    if (isProcessingThumbnail(card.thumbnailUrl)) card.thumbnailUrl = livePreviewUrl(normalized);
   return VideoPage{std::move(cards), std::move(cursor)};
 }
 

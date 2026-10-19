@@ -22,8 +22,9 @@
 ## What it does
 
 - Live streams, past broadcasts, highlights, uploads and clips, decoded by the PS5's own hardware.
-- Chat next to the video, over it, or turned off, with emotes, badges and name colours. 7TV, BetterTTV and FrankerFaceZ emotes show up too.
-- Home, Browse, categories, Search (it remembers your last 8 searches) and channel pages with the schedule, videos and clips.
+- Chat next to the video, over it, or turned off, with emotes, badges and name colours. 7TV, BetterTTV and FrankerFaceZ emotes show up too. Logged in, you can reply to a message.
+- Home, Browse, categories, Search (it remembers your last 8 searches) and channel pages with the schedule, videos and clips. Home's top stream plays live, without sound, at the top of the page.
+- A stream language filter for Home's popular streams and each category's live streams.
 - Any quality the stream offers, from source down to audio only.
 - A timeline for videos and clips, and videos pick up where you left off.
 - Log in with a QR code to see the channels you follow, get a note when one goes live, chat, and make clips.
@@ -47,7 +48,7 @@ To update, close the app and replace the folder with the new one. Your login and
 
 ### Closing the app
 
-Press Left at the start of a row to open the side menu, pick Quit and wait for the "safe to close" screen. Then close the app from the PS button menu. Closing it with the PS button while a stream plays can crash the console.
+Close it from the PS button menu like any game. The app stops drawing as soon as the PS5 takes over, before the close goes through. In 1.0, closing it like that while a stream played could crash the console; 1.1 fixed that. The side menu (press Left at the start of a row) also has Quit, which stops everything and shows a "safe to close" screen first.
 
 ## Requirements
 
@@ -81,6 +82,7 @@ In the menus:
 | Circle | Back |
 | Square | Open the channel of the stream or clip you're on |
 | Triangle | Reload |
+| L1 and R1 | On Browse and a category's Live tab: pick the stream language |
 | Left, at the start of a row | Open the side menu: Home, Following, Browse, Search, Settings and Quit |
 
 In the player:
@@ -91,11 +93,12 @@ In the player:
 | R1 | Chat next to the video, over it, or off |
 | R2 | Quality |
 | Triangle | Send a chat message (logged in) |
+| L1, then Up and Down | Pause chat and pick a message, then L1 again to reply to it (logged in) |
 | Square | Clip the last moments of a live stream, then scan the QR code to see it (logged in) |
 | Left and Right | Skip 10 seconds in videos and clips; hold to scrub |
 | Circle | Back, then Stop to leave the player |
 
-Settings has three pages. Twitch has your account, the default quality, where chat goes, the chat text size, third-party emotes and live notifications. Controls & sound has the keyboard (the PS5's own or the app's), navigation sounds and the controller light. System has Clear history, About and Quit.
+Settings has three pages. Twitch has your account, the default quality, where chat goes, the chat text size, third-party emotes, live notifications and the live preview on Home. Controls & sound has the keyboard (the PS5's own or the app's), navigation sounds and the controller light. System has Clear history, About and Quit.
 
 ## What it can't do
 

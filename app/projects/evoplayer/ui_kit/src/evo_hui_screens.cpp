@@ -214,15 +214,45 @@ Palette Palette::from(const evo_rmlui_theme_t &t)
 
 /* ---------------------------------------------------------------- backdrop */
 
-void draw_backdrop(DrawList &list, const Context &ctx, std::uint32_t picture, float picture_alpha)
+void draw_backdrop(DrawList &list, const Context &ctx, std::uint32_t picture, float picture_alpha,
+                   Rect hole)
 {
     const Palette &p = ctx.palette;
     const Rect screen{0, 0, ::hui::gfx::kVirtualWidth, ::hui::gfx::kVirtualHeight};
-    list.gradient_rect(screen, 0, p.bg_top, p.bg_bottom);
+    const bool cut = hole.w > 1.0f && hole.h > 1.0f;
+    if (!cut)
+        list.gradient_rect(screen, 0, p.bg_top, p.bg_bottom);
+    else
+    {
+        /* Four pieces around the hole, so a video quad under the page shows
+         * through. The gradient keeps the same colours it would have had. */
+        const float H = screen.h;
+        const float W = screen.w;
+        auto col = [&](float y) {
+            const float t = std::clamp(y / H, 0.0f, 1.0f);
+            return ::hui::gfx::mix(p.bg_top, p.bg_bottom, t);
+        };
+        const float y0 = std::clamp(hole.y, 0.0f, H);
+        const float y1 = std::clamp(hole.y + hole.h, 0.0f, H);
+        const float x0 = std::clamp(hole.x, 0.0f, W);
+        const float x1 = std::clamp(hole.x + hole.w, 0.0f, W);
+        if (y0 > 0.0f)
+            list.gradient_rect({0, 0, W, y0}, 0, col(0), col(y0));
+        if (y1 < H)
+            list.gradient_rect({0, y1, W, H - y1}, 0, col(y1), col(H));
+        if (y1 > y0)
+        {
+            if (x0 > 0.0f)
+                list.gradient_rect({0, y0, x0, y1 - y0}, 0, col(y0), col(y1));
+            if (x1 < W)
+                list.gradient_rect({x1, y0, W - x1, y1 - y0}, 0, col(y0), col(y1));
+        }
+    }
 
     /* The picture, washed in from the right: the left side stays dark for
-     * the text that sits on it. */
-    if (picture && picture_alpha > 0.0f)
+     * the text that sits on it. A hole means that picture would cover the
+     * video, so it stays off. */
+    if (!cut && picture && picture_alpha > 0.0f)
     {
         list.image(picture, screen, ::hui::gfx::kFullUv, kWhite.with_alpha(0.55f * picture_alpha));
         list.gradient_rect_h(screen, 0, p.bg_bottom.with_alpha(0.97f), p.bg_bottom.with_alpha(0.35f));
@@ -247,6 +277,14 @@ void draw_backdrop(DrawList &list, const Context &ctx, std::uint32_t picture, fl
         const float a = 6.2831853f * t / l.period + l.phase;
         const float x = l.x + 120.0f * std::sin(a);
         const float y = l.y + 70.0f * std::cos(a * 0.7f);
+        if (cut)
+        {
+            const float nx = std::clamp(x, hole.x, hole.x + hole.w);
+            const float ny = std::clamp(y, hole.y, hole.y + hole.h);
+            const float dx = x - nx, dy = y - ny;
+            if (dx * dx + dy * dy < l.r * l.r)
+                continue;
+        }
         list.shadow({x - l.r, y - l.r, 2 * l.r, 2 * l.r}, l.r, l.r * 0.9f, l.c);
     }
 }

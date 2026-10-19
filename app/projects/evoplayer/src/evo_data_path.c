@@ -78,6 +78,51 @@ const char *evo_data_path(const char *leaf)
     return buf;
 }
 
+/* True when a file can be created in `dir`. A probe write rather than
+ * access(): the app's libc has no access(), and with no stick /mnt/usb0 is a
+ * bare mount point on a read-only root that a stat would still find. */
+static int dir_writable(const char *dir)
+{
+    char probe[256];
+    FILE *f;
+    if (snprintf(probe, sizeof probe, "%s/.evo_probe", dir) >= (int)sizeof probe)
+        return 0;
+    f = fopen(probe, "w");
+    if (!f)
+        return 0;
+    fclose(f);
+    remove(probe);
+    return 1;
+}
+
+const char *evo_diag_dir(void)
+{
+    static const char *dir;
+    if (dir)
+        return dir;
+    if (dir_writable("/mnt/usb0")) {
+        dir = "/mnt/usb0";
+        return dir;
+    }
+#if defined(EVO_USB_REMOTE) && defined(EVO_APP_MODULE)
+    {
+        /* Only once the sandbox is open: before that the data root is the
+         * transient /download0 fallback, which isn't worth logging to. */
+        static char dev[160];
+        const char *root = evo_data_dir();
+        if (strncmp(root, "/data/", 6) == 0 &&
+            snprintf(dev, sizeof dev, "%s/dev", root) < (int)sizeof dev) {
+            evo_mkdir(dev);
+            if (dir_writable(dev)) {
+                dir = dev;
+                return dir;
+            }
+        }
+    }
+#endif
+    return NULL;
+}
+
 int evo_mkdir(const char *path)
 {
 #ifdef EVO_APP_MODULE

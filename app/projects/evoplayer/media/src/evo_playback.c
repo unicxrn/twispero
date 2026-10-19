@@ -31,11 +31,26 @@
 #include "evo_packet_queue.h"
 #include "evo_demux.h"
 #include "evo_audio_out.h"
+#include "evo_av_clock.h"
 #include "evo_direct_mem.h"
 
 #ifndef SCREEN_PLAYER
 #define SCREEN_PLAYER 2
 #endif
+
+/* Home's live picture: decode and the audio clock run without screen == PLAYER. */
+extern int screen;
+static int g_pb_present_extra = 0;
+
+void evo_pb_set_presenting(int on) { g_pb_present_extra = on ? 1 : 0; }
+
+int evo_pb_presenting(void) { return screen == SCREEN_PLAYER || g_pb_present_extra; }
+
+static volatile int g_pb_quiet = 0;
+
+void evo_pb_set_quiet(int on) { g_pb_quiet = on ? 1 : 0; }
+
+int evo_pb_quiet(void) { return g_pb_quiet; }
 
 #define WIDTH  1920
 #define HEIGHT 1080
@@ -117,7 +132,8 @@ static void note_vdec_result(int fatal)
 #ifdef EVO_APP_MODULE
     pp_stage_bc("P8_VDEC_FATAL", "decode failed repeatedly - ending playback");
 #endif
-    toast_error("Can't play this", "The video couldn't be decoded");
+    if (!evo_pb_quiet())
+        toast_error("Can't play this", "The video couldn't be decoded");
 }
 
 volatile int video_thread_running = 0;
@@ -210,6 +226,9 @@ double prospero_media_clock_seconds(void)
     return video_rel;
 }
 
+/* The PTS of the audio block playing (audio_clock_seconds is that PTS minus
+ * first_video_pts_seconds, evo_audio_out.h), in microseconds, or -1 while
+ * there is no audio clock to follow. */
 int64_t evo_audio_master_media_us(void *user)
 {
     (void)user;
@@ -558,7 +577,15 @@ int decode_next_video_frame(void)
                 double audio_at_wait = audio_rel;
                 int stuck_iters = 0;
 
+                /*
+                 * More than EVO_AV_JUMP_US ahead is not drift: the timestamps
+                 * jumped (a new timeline after a stream restart or an ad) and
+                 * the audio has already crossed to the other side, where it
+                 * moved the anchor (evo_audio_out.c). Waiting here could never
+                 * end that way; pp_clock still paces this frame.
+                 */
                 while (behind < -0.008 &&
+                       behind > -(double)EVO_AV_JUMP_US / 1000000.0 &&
                        !player_paused &&
                        video_decode_ready &&
                        wait_iters < 100) {
@@ -735,7 +762,7 @@ void *video_decode_thread_func(void *arg) {
             video_decode_hold ||
             pb_prebuffer_hold ||
             pb_scrub_hold ||
-            screen != SCREEN_PLAYER ||
+            !evo_pb_presenting() ||
             !video_decode_ready
         ) {
             video_decode_parked = 1;

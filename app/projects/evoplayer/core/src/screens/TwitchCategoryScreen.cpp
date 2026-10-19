@@ -3,6 +3,7 @@
 #include "evo/screens/TwitchScreenData.hpp"
 #include "evo/Application.hpp"
 #include "evo_rmlui_bridge.h"
+#include "evo_twitch_settings.h"
 
 #include <algorithm>
 #include <cstring>
@@ -46,12 +47,27 @@ void TwitchCategoryScreen::onEnter() {
     if (m_tab == ClipsTab) refreshClips(false);
 }
 
+void TwitchCategoryScreen::onExit() {
+    m_language.apply(true);
+    StatefulScreen::onExit();
+}
+
+void TwitchCategoryScreen::update(double deltaMs) {
+    StatefulScreen::update(deltaMs);
+    /* L1/R1's language, once the presses stop: the live list again in it. */
+    if (m_language.apply(false)) refresh(false);
+}
+
+std::string TwitchCategoryScreen::liveKey() const {
+    return m_name + "\n" + evo_twitch::settings().browseLanguage;
+}
+
 void TwitchCategoryScreen::refresh(bool force) {
     if (m_name.empty()) return;
-    if (force || m_requested != m_name ||
+    if (force || m_requested != liveKey() ||
         twitch_screen::due(evo_twitch::category_streams(), evo_twitch::data_now_ms())) {
         evo_twitch::request_category_streams(m_name);
-        m_requested = m_name;
+        m_requested = liveKey();
     }
 }
 
@@ -73,7 +89,7 @@ void TwitchCategoryScreen::refreshClips(bool force) {
 }
 
 int TwitchCategoryScreen::count() const {
-    if (m_name.empty() || m_requested != m_name) return 0;
+    if (m_name.empty() || m_requested != liveKey()) return 0;
     return std::min<int>(static_cast<int>(evo_twitch::category_streams().value.size()),
                          EVO_HUI_TWITCH_CATEGORY_STREAMS);
 }
@@ -87,7 +103,7 @@ int TwitchCategoryScreen::clipCount() const {
 bool TwitchCategoryScreen::tabLoading() const {
     if (m_tab == ClipsTab)
         return !clipsOurs() || twitch_screen::status(evo_twitch::category_clips().status) == EVO_HUI_TWITCH_LOADING;
-    return m_requested != m_name ||
+    return m_requested != liveKey() ||
            twitch_screen::status(evo_twitch::category_streams().status) == EVO_HUI_TWITCH_LOADING;
 }
 
@@ -240,6 +256,12 @@ bool TwitchCategoryScreen::handleInput(uint32_t pressed, uint32_t held, uint32_t
         TwitchChannelScreen::show(login);
         return true;
     }
+    /* L1 and R1 step the stream language of the live list (and Home's, see
+     * TwitchBrowseScreen). Clips are in every language. */
+    if ((pressed & (PadButtons::L1 | PadButtons::R1)) && m_tab == LiveTab) {
+        m_language.step((pressed & PadButtons::R1) != 0);
+        return true;
+    }
     if (pressed & PadButtons::Triangle) {
         evo_feedback(EVO_FB_CONFIRM);
         if (m_tab == ClipsTab)
@@ -263,7 +285,7 @@ void TwitchCategoryScreen::render(uint32_t* framebuffer, int width, int height) 
     }
     const auto& streams = evo_twitch::category_streams();
     const auto& clips = evo_twitch::category_clips();
-    if (m_requested == m_name) m_refreshToast.check(streams);
+    if (m_requested == liveKey()) m_refreshToast.check(streams);
     if (clipsOurs()) m_clipsToast.check(clips);
     keepFocusValid();
     const int n = count();
@@ -285,7 +307,7 @@ void TwitchCategoryScreen::render(uint32_t* framebuffer, int width, int height) 
         p.status = EVO_HUI_TWITCH_ERROR;
         p.error = "Pick a category in Browse";
     } else {
-        p.status = m_requested == m_name ? twitch_screen::status(streams.status) : EVO_HUI_TWITCH_LOADING;
+        p.status = m_requested == liveKey() ? twitch_screen::status(streams.status) : EVO_HUI_TWITCH_LOADING;
         /* As on a channel page: "Not found" alone says too little. */
         p.error = streams.error == "Not found" ? "Category not found" : streams.error.c_str();
     }
@@ -329,6 +351,8 @@ void TwitchCategoryScreen::render(uint32_t* framebuffer, int width, int height) 
     p.rail_focused = railFocused ? 1 : 0;
     p.starting_login = m_startingLogin.empty() ? nullptr : m_startingLogin.c_str();
     p.starting_id = m_startingId.empty() ? nullptr : m_startingId.c_str();
+    m_languageLine = twitch_screen::languageNote(m_language.shown());
+    p.language = m_languageLine.c_str();
 
 #if defined(EVO_AGC_DEVICE)
     evo_hui_update_twitch_category(&p);

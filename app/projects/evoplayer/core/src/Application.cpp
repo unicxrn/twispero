@@ -60,6 +60,7 @@ extern "C" int perf_render_fps;
 #include "evo_playback.h"
 #include "evo_adec.h"
 #include "evo_hw.h"
+#include "evo_sysui.h"
 #include "evo_rmlui_bridge.h"
 #include "evo_perf_monitor.h"
 #include "evo_vdec.h"
@@ -287,6 +288,9 @@ bool Application::initialize(int argc, char** argv) {
     /* PS5 Pro detection, cached. The debug overlay names the console from
      * it. Runs before the unjail, like the decoder probes. */
     evo_hw_probe();
+    /* The system's focus flag, for closes from the PS menu (evo_sysui.h).
+     * Opened here, before the unjail, like the above. */
+    evo_sysui_probe();
 
     if (!initHardware()) {
         return false;
@@ -931,7 +935,9 @@ int Application::run() {
              * restarting the channel keeps its chat meanwhile; any other
              * start has nothing Twitch playing yet. */
             const char* channel = evo_twitch_launcher_switching_channel();
-            if (!channel) {
+            /* Home's muted picture has no chat, also on the frame its start
+             * is back but not yet taken in by the launcher's pump. */
+            if (!channel && !evo_twitch_preview_active() && !evo_twitch_preview_starting()) {
                 const PlaybackSource* src = (m_playbackController && !evo_twitch_launcher_busy())
                                                 ? m_playbackController->currentSource()
                                                 : nullptr;
@@ -987,6 +993,44 @@ int Application::run() {
         }
 
         g_pace.mark(0);   /* pumps: net, usb remote, Twitch, jailbreak */
+
+        /*
+         * The system has the focus (its home screen, or a close from its
+         * menu on the way): no input and no GPU work until the app has it
+         * back (evo_sysui.h). On the way in the GPU is drained, so a close
+         * meets an idle GPU, as after the soft close. Seen on hardware
+         * (2026-10-19): the system takes the focus 1-2 s before it kills an
+         * app, and this notices within a frame. Home's picture stops, as
+         * nobody can see it; the pumps above keep running, and a stream in
+         * the player plays on with its sound. Not while the PS5's own
+         * keyboard is up: it is the system's, and it may hold the focus
+         * while the app has to keep reading it.
+         */
+        {
+            static bool s_sysui_parked = false;
+            const bool lost = evo_sysui_focus_lost() == 1 && !evo_keyboard_is_native_active();
+            if (lost && !m_softClose) {
+                if (!s_sysui_parked) {
+                    s_sysui_parked = true;
+                    /* The GPU first: the kill can come well under a second
+                     * after the focus moves (seen: about half a second). */
+                    evo_agc_runtime_wait_idle(500);
+                    evo_twitch_preview_stop();
+                    evo_boot_log("sysui: focus left, drawing stopped and the GPU drained (screen %d)",
+                                 static_cast<int>(m_screenManager->getCurrentScreenId()));
+                    evo_boot_log_flush();
+                }
+                lastButtons = 0;
+                usleep(10000);
+                continue;
+            }
+            if (s_sysui_parked) {
+                s_sysui_parked = false;
+                jb_repaint = 8;   /* a few frames drawn whatever else is going on */
+                evo_boot_log("sysui: focus back, drawing again");
+                evo_boot_log_flush();
+            }
+        }
         // 1. Controller input & auto-repeat
         std::memset(&padData, 0, sizeof(padData));
         uint32_t pressed = 0;
@@ -1155,8 +1199,10 @@ int Application::run() {
                 }
             } else {
                 /* Not while a Twitch stream is starting: no screen may start
-                 * or stop playback under its worker (evo_twitch.h). */
-                if (hasInput && !evo_twitch_launcher_busy()) {
+                 * or stop playback under its worker (evo_twitch.h). Home's
+                 * picture is the exception: what a screen can do then waits
+                 * for its start, so the pad stays alive. */
+                if (hasInput && (!evo_twitch_launcher_busy() || evo_twitch_preview_starting())) {
                     m_screenManager->handleInput(pressed, held, released);
                 }
             }
@@ -1193,15 +1239,32 @@ int Application::run() {
 
         // 3. Determine if graphics needs to render/present
         bool isPlayer = (m_screenManager->getCurrentScreenId() == ScreenId::Player);
+        /* Home's muted hero. The picture is the video quad, so player mode
+         * stays on while that stream is up even though this screen is not
+         * the player. Decode already follows evo_pb_presenting(), which the
+         * launcher sets for the preview before the first sample. */
+        const bool preview = !isPlayer && evo_twitch_preview_active();
+        const bool showVideo = isPlayer || preview;
 
-        static bool s_was_player = false;
-        if (isPlayer != s_was_player) {
-            evo_agc_runtime_set_player_mode(isPlayer ? 1 : 0);
-            s_was_player = isPlayer;
+        /* The player, or the picture inside Home (mode 2: no flash of both
+         * scanouts on the way in, see evo_agc_runtime.h). */
+        const int videoMode = isPlayer ? 1 : preview ? 2 : 0;
+        static int s_video_mode = 0;
+        if (videoMode != s_video_mode) {
+            evo_agc_runtime_set_player_mode(videoMode);
+            s_video_mode = videoMode;
+        }
+
+        /* The hero's art as fractions of the 1920x1080 page. Before
+         * frame_begin: a new box marks both scanouts dirty, and that clear
+         * has to land before the blit. */
+        if (preview && !m_softClose) {
+            evo_agc_runtime_set_video_rect(EVO_HUI_TWITCH_HERO_X / 1920.0f, EVO_HUI_TWITCH_HERO_Y / 1080.0f,
+                                           EVO_HUI_TWITCH_HERO_W / 1920.0f, EVO_HUI_TWITCH_HERO_H / 1080.0f);
         }
 
         bool hasAnim = evo::animation::AnimationManager::getInstance().hasActiveAnimations();
-        int uiActive = (frame < 10) || isPlayer || hasInput || hasAnim ||
+        int uiActive = (frame < 10) || showVideo || hasInput || hasAnim ||
                        evo_rmlui_needs_frame() || (jb_repaint > 0);
         if (jb_repaint > 0) jb_repaint--;
         evo_rmlui_set_active(uiActive);
@@ -1237,7 +1300,7 @@ int Application::run() {
         // 4. Video Quad blit & Screen rendering
         bool swap = false;
         static int64_t s_last_pts = -1;
-        if (!isPlayer) {
+        if (!showVideo) {
             s_last_pts = -1;
             g_pace.stop();
         }
@@ -1349,6 +1412,33 @@ int Application::run() {
                 swap = true;
             }
         } else {
+            /* The hero quad, into the scanout, before the page composites
+             * over it. The hole in the backdrop is transparent, so this is
+             * what shows through. Same blit as the player; the box above
+             * keeps it on the art. The page goes over the picture every
+             * frame (note_ui_drawn below), so each buffer is cleared before
+             * it is drawn into again and the picture is blitted afresh:
+             * nothing translucent (a dialog's dim, the rail's, a toast)
+             * piles up on it. */
+            if (preview && !m_softClose) {
+                pp_video_frame f;
+                std::memset(&f, 0, sizeof(f));
+                int have = (pp_playback_get_video_frame(&g_pp_pb, &f) && f.ready);
+                int64_t current_pts = g_pp_pb.display_pts_us;
+                bool new_frame = (current_pts != s_last_pts);
+                bool buffer_stale = have && evo_agc_runtime_video_slot_stale(current_pts);
+                if (have && (new_frame || buffer_stale)) {
+                    s_last_pts = current_pts;
+                    int is_direct = (evo_pb_active_backend() == EVO_VDEC_BACKEND_NATIVE && !f.held && f.uv != nullptr) ? 1 : 0;
+                    evo_agc_blit_yuv(f.y, f.y_pitch, f.uv, f.uv_pitch,
+                                     f.u, f.u_pitch, f.v, f.v_pitch,
+                                     static_cast<int>(f.coded_w), static_cast<int>(f.coded_h),
+                                     static_cast<int>(f.disp_w), static_cast<int>(f.disp_h),
+                                     0, f.ten_bit, f.color_trc,
+                                     is_direct, current_pts, f.dovi);
+                    swap = true;
+                }
+            }
             if (m_uiScratch) {
                 if (frame < 5) {
                     evo_bt("frame %d: screenManager render begin", frame);
@@ -1379,6 +1469,10 @@ int Application::run() {
                     swap = evo_rmlui_consume_drew();
                 }
             }
+            /* The page went over Home's picture: this buffer is cleared
+             * before its next use (see the blit above). */
+            if (preview && !m_softClose)
+                evo_agc_runtime_note_ui_drawn();
         }
 
         /*

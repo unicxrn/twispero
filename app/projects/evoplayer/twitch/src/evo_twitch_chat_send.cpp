@@ -91,6 +91,7 @@ struct Job {
   std::string channel;  // the login, lower case
   std::string userId;   // who was logged in when it was queued
   std::string text;
+  std::string replyId;  // the line this answers, or ""
 };
 
 // A failure for the main thread to toast.
@@ -231,7 +232,7 @@ bool sendOne(const Job& job, Ids& ids, std::string* reason, bool* vague) {
               keepId(ids, job.channel, fresh);
               id = &ids.back().second;
             }
-            result = helix.sendChat(*id, userId, job.text);
+            result = helix.sendChat(*id, userId, job.text, job.replyId);
           } catch (const twitch::UnauthorizedError& e) {
             failure = e.missingScope() ? kScopeMissing : kTokenRefused;
             snprintf(detail, sizeof detail, "%s", e.what());
@@ -281,7 +282,8 @@ bool sendOne(const Job& job, Ids& ids, std::string* reason, bool* vague) {
       }
       return false;
     }
-    evo_log("twitch: chat: sent to %s in %llu ms", job.channel.c_str(), ms);
+    evo_log("twitch: chat: sent to %s in %llu ms%s", job.channel.c_str(), ms,
+            job.replyId.empty() ? "" : " (a reply)");
     return true;
   }
 }
@@ -390,7 +392,8 @@ bool blank(const std::string& text) noexcept {
 
 }  // namespace
 
-const char* chat_send(const std::string& channel, const std::string& text) noexcept {
+const char* chat_send(const std::string& channel, const std::string& text,
+                      const std::string& replyId) noexcept {
   try {
     if (blank(text)) return nullptr;
     State& s = state();
@@ -399,6 +402,7 @@ const char* chat_send(const std::string& channel, const std::string& text) noexc
     job.channel = channel;
     for (char& c : job.channel) c = lowerAscii(c);
     job.text = text;
+    job.replyId = replyId;
     // One line: the IME's own keyboard can't type a line break, but a pasted
     // or phone-sent text could carry one.
     for (char& c : job.text)

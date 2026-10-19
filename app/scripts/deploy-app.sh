@@ -116,16 +116,26 @@ def verdict(host, port):
     f.connect(host, port, timeout=10)
     f.login()
     try:
-        lines = []
-        f.cwd("/mnt/usb0")
-        f.retrlines("LIST", lines.append)
-        if not any(" evo.log" in l or l.endswith("evo.log") for l in lines):
+        # The USB stick, or /data/ps5twitch/dev where a dev build started
+        # with no stick keeps its log and status.
+        diag = None
+        for d in ("/mnt/usb0", "/data/ps5twitch/dev"):
+            lines = []
+            try:
+                f.cwd(d)
+                f.retrlines("LIST", lines.append)
+            except Exception:
+                continue
+            if any(" evo.log" in l or l.endswith("evo.log") for l in lines):
+                diag = d
+                break
+        if diag is None:
             return "ABSENT"
 
         def stamp():
             buf = []
             try:
-                f.retrbinary("RETR /mnt/usb0/evo_status", buf.append)
+                f.retrbinary("RETR " + diag + "/evo_status", buf.append)
             except Exception:
                 return None
             for tok in b"".join(buf).decode("utf-8", "replace").split():
@@ -260,10 +270,11 @@ with FTP() as ftp:
     rmtree(ftp, folder)               # kill any stale loose folder for this TID
     print(f"cleared {folder} (if present)")
     cleared = 0
-    for name in USB_LOGS:
-        try: ftp.sendcmd(f"DELE /mnt/usb0/{name}"); cleared += 1
-        except error_perm: pass
-    print(f"cleared {cleared} stale /mnt/usb0 log file(s)")
+    for diag in ("/mnt/usb0", "/data/ps5twitch/dev"):
+        for name in USB_LOGS:
+            try: ftp.sendcmd(f"DELE {diag}/{name}"); cleared += 1
+            except error_perm: pass
+    print(f"cleared {cleared} stale log file(s) on the stick and in /data/ps5twitch/dev")
     for path in (tmp, remote):
         try: ftp.sendcmd(f"DELE {path}")
         except error_perm: pass

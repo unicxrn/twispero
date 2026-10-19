@@ -24,8 +24,9 @@ namespace evo {
  * (Left at the start of a row opens the rail); Up from the first row goes to
  * the clips' chips and the tabs, where moving onto a tab opens it and Cross
  * on a chip shows its clips. Cross plays the stream or the clip, Square opens
- * its channel page, Triangle reloads the open tab's list, Circle goes back
- * to where it was opened from (Browse, Home or Search).
+ * its channel page, Triangle reloads the open tab's list, L1 and R1 on the
+ * Live tab step the stream language (twitch_screen::LanguageStepper), Circle
+ * goes back to where it was opened from (Browse, Home or Search).
  */
 class TwitchCategoryScreen : public StatefulScreen {
 public:
@@ -42,6 +43,8 @@ public:
 
     ScreenId getScreenId() const override { return ScreenId::TwitchCategory; }
     void onEnter() override;
+    void onExit() override;
+    void update(double deltaMs) override;
     bool handleInput(uint32_t pressed, uint32_t held, uint32_t released) override;
     void render(uint32_t* framebuffer, int width, int height) override;
 
@@ -56,8 +59,10 @@ private:
     /* Asks for the streams when the list is for another category, missing,
      * failed or older than a minute; with force, always. This screen is the
      * only one that asks for category streams, so m_requested says what the
-     * slot holds. */
+     * slot holds. A list in another stream language is another list. */
     void refresh(bool force);
+    /* The category and the stream language, as m_requested holds them. */
+    std::string liveKey() const;
     /* The same for the clips (another chip counts as another list). */
     void refreshClips(bool force);
     std::string clipsKey() const;
@@ -77,7 +82,9 @@ private:
     std::string m_name;
     std::string m_boxArtUrl;
     int m_viewers = -1;
-    std::string m_requested;      /* the name the slot was last asked for */
+    std::string m_requested;      /* liveKey() when the slot was last asked for */
+    twitch_screen::LanguageStepper m_language;
+    std::string m_languageLine;   /* "German streams", kept for the kit's pointer */
     int m_cursor = 0;
     int m_tab = LiveTab;
     int m_focus = Grid;

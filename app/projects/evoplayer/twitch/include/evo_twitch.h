@@ -48,6 +48,30 @@ void evo_twitch_launcher_start(void) EVO_TWITCH_NOEXCEPT;
  * Ignored while the app is quitting. Main thread only. */
 void evo_twitch_play(const char* login) EVO_TWITCH_NOEXCEPT;
 
+/* Home's small muted picture of the top live channel (see the launcher's
+ * file header). It starts only while the launcher is idle, nothing else
+ * plays and Home is up, in a low quality (480p or the closest below), with
+ * no sound, no toasts and no chat. Leaving Home stops it. It doesn't count
+ * as "Starting" or as "something else is playing": a play request stops it
+ * and goes ahead, and one made while it is still opening waits for that.
+ * One that fails, or dies once up, is dropped and holds the next try back
+ * (15 s, doubling to 5 minutes; 10 minutes for that channel). Calling it
+ * every frame is fine. Main thread only. */
+void evo_twitch_preview(const char* login) EVO_TWITCH_NOEXCEPT;
+void evo_twitch_preview_stop(void) EVO_TWITCH_NOEXCEPT;
+/* 1 when that login's picture is the one on Home and a frame is ready. */
+int  evo_twitch_preview_picture(const char* login) EVO_TWITCH_NOEXCEPT;
+/* 1 while that picture is up. The frame loop uses it to draw the video. */
+int  evo_twitch_preview_active(void) EVO_TWITCH_NOEXCEPT;
+/* 1 while it is looked up or opening. busy() may be 1 then too, but the pad
+ * may still reach the screens: everything they can do waits for it. */
+int  evo_twitch_preview_starting(void) EVO_TWITCH_NOEXCEPT;
+/* The picture is this login, plays already, and in the quality Settings
+ * would pick: unmute, remember the channel and open the player, without
+ * starting the stream again. 1 when it did that; 0 and the caller plays the
+ * channel as usual. */
+int  evo_twitch_preview_take(const char* login) EVO_TWITCH_NOEXCEPT;
+
 /* ---- Videos and clips (stage 7) ---- */
 
 /* What kind of video plays: Twitch's three kinds, and clips. 0 is a live
@@ -112,13 +136,16 @@ void evo_twitch_launcher_save_progress(void) EVO_TWITCH_NOEXCEPT;
 /* 1 from a play request (or an autoplay that found its switch file) until the
  * stream has started or failed; then evo_twitch_play() works again. For the
  * screens' "Starting..." state. Covers busy() and the lookup before it, while
- * input still reaches the screens. Main thread only. */
+ * input still reaches the screens. Home's picture doesn't count. Main thread
+ * only. */
 int evo_twitch_launcher_starting(void) EVO_TWITCH_NOEXCEPT;
 
 /* 1 while the start worker is inside PlaybackController::startPlaybackSource().
  * The controller has no locking, so while this is 1 the main thread must not
  * start or stop playback: Application holds the soft close's first stage,
- * keeps pad input from the screens, and shutdown() waits. Main thread only. */
+ * keeps pad input from the screens (except while it is Home's picture that
+ * starts, see evo_twitch_preview_starting()), and shutdown() waits. Main
+ * thread only. */
 int evo_twitch_launcher_busy(void) EVO_TWITCH_NOEXCEPT;
 
 /* ---- What plays ---- */

@@ -13,7 +13,10 @@ namespace evo {
  *
  * The D-pad moves the cursor on the grid (Left at the start of a row opens the
  * rail), Cross opens the category (TwitchCategoryScreen), Triangle reloads the
- * list, Circle goes back (normally to Home).
+ * list, L1 and R1 change the stream language (twitch_screen::LanguageStepper:
+ * Home's popular streams and every category's live list; the categories
+ * themselves are the top ones in every language), Circle goes back
+ * (normally to Home).
  */
 class TwitchBrowseScreen : public StatefulScreen {
 public:
@@ -22,6 +25,8 @@ public:
 
     ScreenId getScreenId() const override { return ScreenId::TwitchBrowse; }
     void onEnter() override;
+    void onExit() override;
+    void update(double deltaMs) override;
     bool handleInput(uint32_t pressed, uint32_t held, uint32_t released) override;
     void render(uint32_t* framebuffer, int width, int height) override;
 
@@ -34,6 +39,8 @@ private:
     void activate();
 
     int m_cursor = 0;
+    std::string m_languageLine;  /* the subtitle, kept for the kit's pointer */
+    twitch_screen::LanguageStepper m_language;
     twitch_screen::RefreshToast m_refreshToast;
     twitch_screen::PictureKeeper m_pictures;
 };

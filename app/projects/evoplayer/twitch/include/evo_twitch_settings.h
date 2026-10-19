@@ -36,5 +36,12 @@ void set_debug_overlay(bool on) noexcept;
 void set_chat_text_size(twitch::ChatTextSize size) noexcept;
 void set_third_party_emotes(bool on) noexcept;
 void set_live_notifications(bool on) noexcept;
+void set_home_preview(bool on) noexcept;
+void set_browse_language(const std::string& code) noexcept;  // not a listed code: ""
+// The language after `code` in the Browse list ("" is "All languages"), the
+// one before it, and the words for the toast and the page ("German").
+std::string next_browse_language(const std::string& code) noexcept;
+std::string prev_browse_language(const std::string& code) noexcept;
+std::string browse_language_label(const std::string& code) noexcept;
 
 }  // namespace evo_twitch

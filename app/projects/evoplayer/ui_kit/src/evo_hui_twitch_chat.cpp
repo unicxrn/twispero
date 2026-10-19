@@ -489,6 +489,13 @@ void draw_line(DrawList &list, const Context &ctx, const ChatLine &line, float x
         const Rect tint{x - kMentionPadX, y - pad_y, width + 2.0f * kMentionPadX, l.height + 2.0f * pad_y};
         faded_rect(list, tint, kPurple.with_alpha(kMentionAlpha), fade);
     }
+    if (line.selected && l.height > 0.0f)
+    {
+        const float pad_y = std::max(0.0f, std::floor(gap * 0.5f) - 1.0f);
+        const Rect tint{x - kMentionPadX, y - pad_y, width + 2.0f * kMentionPadX, l.height + 2.0f * pad_y};
+        faded_rect(list, tint, kWhite.with_alpha(0.10f), fade);
+        faded_rect(list, {x - kMentionPadX, y - pad_y, kBarW, l.height + 2.0f * pad_y}, kWhite, fade);
+    }
     if (l.card)
     {
         faded_rect(list, {x, y, width, l.height}, kWhite.with_alpha(0.05f), fade);
@@ -599,6 +606,7 @@ void copy_line(ChatLine &out, const evo_hui_twitch_chat_line_t &in)
     out.reply_to = str(in.reply_to);
     out.reply_login = str(in.reply_login);
     out.mention = in.mention != 0;
+    out.selected = in.selected != 0;
     out.color = in.color;
     out.badges.clear();
     if (in.badges)
@@ -628,6 +636,7 @@ bool refresh_line(ChatLine &line, const evo_hui_twitch_chat_line_t &in)
     if (line.kind != in.kind || line.badges.size() != badges || line.segments.size() != segments)
         return false;
     line.mention = in.mention != 0; /* the login can change while the line stays */
+    line.selected = in.selected != 0;
     for (std::size_t i = 0; i < badges; ++i)
         line.badges[i] = twitch_picture(in.badges[i]);
     for (std::size_t i = 0; i < segments; ++i)
@@ -647,6 +656,7 @@ void TwitchChatScreen::set(const evo_hui_twitch_chat_params_t &p)
                      ? p.text_size
                      : EVO_HUI_TWITCH_CHAT_TEXT_MEDIUM;
     channel_.assign(p.channel ? p.channel : "");
+    paused_ = p.paused != 0;
 
     /* The video's rect, kept to the screen (a zoomed picture may start off
      * it). Anything not finite, empty or off the screen counts as unknown. */
@@ -726,7 +736,8 @@ void TwitchChatScreen::draw_side(DrawList &list, const Context &ctx) const
     const float left = panel.x + m.pad;
     const float right = panel.x + panel.w - m.pad;
     const float base = std::round((kHeaderH + kCapHeight * kTitleSize) * 0.5f);
-    const float title_w = ui::text(list, fonts.semibold, "Stream chat", left, base, kTitleSize, kBody);
+    const float title_w = ui::text(list, fonts.semibold, paused_ ? "Chat paused" : "Stream chat", left, base,
+                                   kTitleSize, kBody);
     const std::string &channel = channel_fit_.get(fonts.regular, channel_, kChannelSize, right - left - title_w - 24.0f);
     ui::text(list, fonts.regular, channel, right, base, kChannelSize, kMuted, Align::right);
     list.rounded_rect({panel.x, kHeaderH - 1.0f, panel.w + kBleed, 1.0f}, 0.0f, kDivider);

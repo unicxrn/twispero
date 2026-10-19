@@ -14,6 +14,7 @@
 #include <string>
 
 #include "evo_boot_log.h"
+#include "twitch/browse.hpp"
 #include "evo_data_path.h"
 #include "evo_jailbreak.h"
 
@@ -92,6 +93,38 @@ void set_debug_overlay(bool on) noexcept { loaded().debugOverlay = on; }
 void set_chat_text_size(twitch::ChatTextSize size) noexcept { loaded().chatTextSize = size; }
 void set_third_party_emotes(bool on) noexcept { loaded().thirdPartyEmotes = on; }
 void set_live_notifications(bool on) noexcept { loaded().liveNotifications = on; }
+void set_home_preview(bool on) noexcept { loaded().homePreview = on; }
+
+void set_browse_language(const std::string& code) noexcept {
+  try {
+    loaded().browseLanguage = twitch::isBrowseLanguage(code) ? code : std::string();
+  } catch (...) {
+  }
+}
+
+std::string next_browse_language(const std::string& code) noexcept {
+  try {
+    return twitch::nextBrowseLanguage(code);
+  } catch (...) {
+    return code;
+  }
+}
+
+std::string prev_browse_language(const std::string& code) noexcept {
+  try {
+    return twitch::prevBrowseLanguage(code);
+  } catch (...) {
+    return code;
+  }
+}
+
+std::string browse_language_label(const std::string& code) noexcept {
+  try {
+    return twitch::browseLanguageLabel(code);
+  } catch (...) {
+    return std::string("All languages");
+  }
+}
 
 bool save_settings(const twitch::AppSettings& s) noexcept {
   try {

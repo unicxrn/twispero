@@ -417,6 +417,7 @@ static void note(const char *fmt, ...)
 extern int g_pb_decode_fatal;
 extern int video_decode_done;
 #include "evo_toast.h"
+#include "evo_playback.h"   /* evo_pb_quiet() */
 
 static volatile int64_t nwd_start_ms;    /* 0 = no native call in flight */
 static volatile int     nwd_limit_ms;
@@ -448,7 +449,8 @@ static void *nwd_thread_main(void *arg)
              nwd_what ? (const char *)nwd_what : "call", (long long)waited);
         g_pb_decode_fatal = 1;
         video_decode_done = 1;
-        toast_error("Playback stopped", "The video decoder stopped responding");
+        if (!evo_pb_quiet())
+            toast_error("Playback stopped", "The video decoder stopped responding");
     }
     return NULL;
 }

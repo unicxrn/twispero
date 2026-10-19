@@ -50,9 +50,11 @@ std::vector<CategoryInfo> parseTopCategories(const nlohmann::json& data);
 std::vector<CategoryInfo> topCategories(GqlClient& gql, int first);
 
 // Streams in one category, most viewers first. Asks Twitch for a few extra (same quirk as topStreams).
-// Throws NotFoundError when the category doesn't exist.
+// Throws NotFoundError when the category doesn't exist. `language` filters to one broadcaster
+// language (see kBrowseLanguages); "" and anything not on that list ask for every language.
 std::vector<StreamInfo> parseCategoryStreams(const nlohmann::json& data, const std::string& categoryName);
-std::vector<StreamInfo> categoryStreams(GqlClient& gql, const std::string& categoryName, int first);
+std::vector<StreamInfo> categoryStreams(GqlClient& gql, const std::string& categoryName, int first,
+                                        const std::string& language = {});
 
 std::vector<CategoryInfo> parseSearchCategories(const nlohmann::json& data);
 std::vector<CategoryInfo> searchCategories(GqlClient& gql, const std::string& query, int first);
@@ -89,6 +91,24 @@ std::string startsInText(const std::string& startAt, long long nowSeconds);
 // The English name of a stream language code as Twitch sends it ("EN" -> "English",
 // "zh-hk" -> "Chinese"), any case; "" for a code not in the list ("OTHER" included).
 std::string languageName(const std::string& code);
+
+// Browse's language filter. The first entry is "" (every language). The rest are
+// Twitch Language enum values, unquoted in a GQL query. "All languages" is the
+// label for "". next/prev wrap. A code not in the list is treated as "".
+inline constexpr const char* kBrowseLanguages[] = {
+    "",  "EN", "ES", "PT", "DE", "FR", "IT", "NL", "PL",
+    "RU", "UK", "JA", "KO", "ZH", "TR", "AR", "TH", "SV"};
+inline constexpr int kBrowseLanguageCount =
+    static_cast<int>(sizeof kBrowseLanguages / sizeof kBrowseLanguages[0]);
+
+bool isBrowseLanguage(const std::string& code) noexcept;
+// The GQL options clause for a whitelisted code (", options: {broadcasterLanguages: [DE]}"),
+// or "" for every language and for a code that is not on the list.
+std::string browseLanguageOption(const std::string& code);
+std::string nextBrowseLanguage(const std::string& code);
+std::string prevBrowseLanguage(const std::string& code);
+// "All languages", or languageName() for a code on the list.
+std::string browseLanguageLabel(const std::string& code);
 
 // Adds (or, if one is already there, replaces) a `t=<bucket>` query parameter
 // on a live preview URL so caches refresh; the bucket is nowSeconds / bucketSeconds,

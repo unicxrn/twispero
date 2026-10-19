@@ -46,6 +46,17 @@ double evo_pb_video_fps(void);        /* 0 until a stream is open            */
 void   evo_pb_queue_depth(int *vpkts, int *apkts, int *ablocks);  /* debug overlay */
 int    evo_pb_active_backend(void);   /* evo_vdec_backend of the live decoder */
 
+/* 1 while frames should be decoded and the audio clock should run: the player
+ * screen, or a caller that asked (Home's muted live picture). The global
+ * `screen` stays whatever screen is really up. */
+void   evo_pb_set_presenting(int on);
+int    evo_pb_presenting(void);
+/* 1 while nobody asked for what plays (Home's muted live picture): the
+ * pipeline's own toasts (connection lost, back online, decoder gave up) go
+ * to the log instead. */
+void   evo_pb_set_quiet(int on);
+int    evo_pb_quiet(void);
+
 /* The audio-preferred media clock (kept under its historical name — many call
  * sites). evo_pb_position_s() is the façade alias. */
 double prospero_media_clock_seconds(void);

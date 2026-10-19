@@ -88,12 +88,27 @@ void evo_log_redact(char *msg, size_t cap)
 #include <time.h>
 #include <unistd.h>
 
+#include "evo_data_path.h"
+
 #ifdef EVO_BOOT_TRACE_POPUP
 struct bl_note { char pad[45]; char msg[3075]; };
 extern int sceKernelSendNotificationRequest(int, void *, unsigned long, int);
 #endif
 
-#define EVO_LOG_PATH "/mnt/usb0/evo.log"
+/* evo.log lives in evo_diag_dir(): the USB stick, or a dev build's
+ * /data/ps5twitch/dev when no stick is in. Empty until that is reachable. */
+static char g_log_path[192];
+
+static const char *bl_log_path(void)
+{
+    if (!g_log_path[0]) {
+        const char *dir = evo_diag_dir();
+        if (!dir)
+            return NULL;
+        snprintf(g_log_path, sizeof g_log_path, "%s/evo.log", dir);
+    }
+    return g_log_path;
+}
 
 /*
  * Two phases:
@@ -314,7 +329,7 @@ static void bl_vlog(const char *level, const char *fmt, va_list ap)
 
 #ifdef EVO_BOOT_TRACE_POPUP
     /* #51: on-screen popup — opt-in (--breadcrumbs). Off by default; the
-     * EVO_LOG_PATH file is the durable channel and is always written. */
+     * evo.log file is the durable channel and is always written. */
     struct bl_note nt;
     memset(&nt, 0, sizeof nt);
     snprintf(nt.msg, sizeof nt.msg, "%s", line);
@@ -401,8 +416,10 @@ static FILE *bl_rotate(FILE *fp)
     static char buf[64 * 1024];
     fflush(fp);
     fclose(fp);
-    FILE *in = fopen(EVO_LOG_PATH, "r");
-    FILE *out = in ? fopen(EVO_LOG_PATH ".1", "w") : NULL;
+    char old_path[200];
+    snprintf(old_path, sizeof old_path, "%s.1", g_log_path);
+    FILE *in = fopen(g_log_path, "r");
+    FILE *out = in ? fopen(old_path, "w") : NULL;
     if (in && out) {
         size_t n;
         while ((n = fread(buf, 1, sizeof buf, in)) > 0)
@@ -410,7 +427,7 @@ static FILE *bl_rotate(FILE *fp)
     }
     if (in) fclose(in);
     if (out) { fflush(out); fsync(fileno(out)); fclose(out); }
-    FILE *fresh = fopen(EVO_LOG_PATH, (in && out) ? "w" : "a");   /* keep it if the copy failed */
+    FILE *fresh = fopen(g_log_path, (in && out) ? "w" : "a");   /* keep it if the copy failed */
     return fresh;
 }
 
@@ -427,9 +444,10 @@ static void bl_session_header(FILE *fp, const char *why)
 void evo_boot_log_flush(void)
 {
     if (!g_fp) {
-        FILE *fp = fopen(EVO_LOG_PATH, "a");
+        const char *path = bl_log_path();
+        FILE *fp = path ? fopen(path, "a") : NULL;
         if (!fp)
-            return;   /* /mnt/usb0 not reachable yet — try again next call */
+            return;   /* the stick (or dev dir) not reachable yet — try again next call */
         pthread_mutex_lock(&g_io_lock);
         fseek(fp, 0, SEEK_END);
         g_written = ftell(fp);

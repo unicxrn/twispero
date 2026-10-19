@@ -16,10 +16,12 @@
 
 #include "evo_playback.h"
 #include "evo_demux.h"
+#include "evo_audio_out.h"
 #include "pp_stage_breadcrumb.h"
 #include "evo_rmlui_devstate.h"
 #include "evo_keyboard.h"
 #include "evo_twitch.h"
+#include "evo_data_path.h"
 
 #ifdef EVO_HAVE_BUILD_ID
 #include "evo_build_id.h"
@@ -27,10 +29,29 @@
 #define EVO_BUILD_ID "unknown"
 #endif
 
-#define CMD_PATH    "/mnt/usb0/evo_cmd"
-#define STATUS_PATH "/mnt/usb0/evo_status"
-#define UI_PATH     "/mnt/usb0/evo_ui.json"
-#define UI_TMP_PATH "/mnt/usb0/evo_ui.json.tmp"
+/* The remote's files live in evo_diag_dir(): the USB stick, or
+ * /data/ps5twitch/dev when no stick is in (tools/evo-remote.sh finds either). */
+static char g_cmd_path[192], g_status_path[192], g_ui_path[192], g_ui_tmp_path[192];
+#define CMD_PATH    g_cmd_path
+#define STATUS_PATH g_status_path
+#define UI_PATH     g_ui_path
+#define UI_TMP_PATH g_ui_tmp_path
+
+/* 1 once the paths are set; 0 while the stick and the dev dir are unreachable. */
+static int remote_paths_ready(void)
+{
+    const char *dir;
+    if (g_cmd_path[0])
+        return 1;
+    dir = evo_diag_dir();
+    if (!dir)
+        return 0;
+    snprintf(g_status_path, sizeof g_status_path, "%s/evo_status", dir);
+    snprintf(g_ui_path, sizeof g_ui_path, "%s/evo_ui.json", dir);
+    snprintf(g_ui_tmp_path, sizeof g_ui_tmp_path, "%s/evo_ui.json.tmp", dir);
+    snprintf(g_cmd_path, sizeof g_cmd_path, "%s/evo_cmd", dir);   /* last: the ready flag */
+    return 1;
+}
 
 extern int    screen;   /* main.c */
 
@@ -195,6 +216,23 @@ static void run_command(const char *line)
                                       -1.0 /* the base was never moved */);
         return;
     }
+    /*
+     * `avdrop <ms>` throws that much decoded audio away, once - what a skipped
+     * HLS segment or a dropped block does - to check the A/V sync fix (#1) on
+     * demand. Watch the "avsync" lines in evo.log: the offset jumps by <ms>
+     * and should be back near 0 within a second.
+     */
+    if (strncmp(buf, "avdrop ", 7) == 0) {
+        char *end = NULL;
+        long ms;
+        errno = 0;
+        ms = strtol(buf + 7, &end, 10);
+        if (end == buf + 7 || *end != '\0' || errno != 0 || ms < 1 || ms > 10000)
+            pp_stage_bc("REMOTE_AVDROP?", buf + 7);
+        else
+            evo_audio_out_avdrop((int)ms);
+        return;
+    }
     pp_stage_bc("REMOTE_CMD", "unknown");
 }
 
@@ -268,6 +306,9 @@ void evo_usb_remote_poll(void)
     static long long last_status = 0;
     long long now = now_ms_local();
 
+    if (!remote_paths_ready())
+        return;   /* no stick and the sandbox still shut: nowhere to talk yet */
+
     /*
      * Command file — consume then delete so each command runs once.
      *
@@ -306,7 +347,8 @@ void evo_usb_remote_poll(void)
 
 void evo_usb_remote_mark_parked(void)
 {
-    write_status(now_ms_local(), 1);
+    if (remote_paths_ready())
+        write_status(now_ms_local(), 1);
 }
 
 #endif /* EVO_USB_REMOTE && EVO_APP_MODULE */

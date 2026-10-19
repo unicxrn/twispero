@@ -182,6 +182,11 @@ std::uint32_t twitch_texture(const Context &ctx, const TwitchPicture &pic)
 std::vector<std::string> fit_lines(const ui::FontRef &font, const std::string &text, float size, float width,
                                    int max_lines)
 {
+    /* No text, no lines: wrap() would give one empty line, and a title the
+     * fonts can't draw at all (drawable() leaves nothing of Japanese or
+     * Korean) would then hold a blank line open in the layout. */
+    if (text.empty())
+        return {};
     std::vector<std::string> lines = font.font->wrap(text, size, width);
     const std::size_t most = static_cast<std::size_t>(std::max(1, max_lines));
     if (lines.size() > most)

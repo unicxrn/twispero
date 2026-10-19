@@ -73,6 +73,9 @@ struct PlaybackSource {
      *  of a stream that is still on) plays from its first segment, not from
      *  near its live edge. */
     bool from_start = false;
+    /** Nobody asked for it (Home's live picture): a start that fails is
+     *  logged, not toasted. */
+    bool quiet = false;
 
     /** A non-local source: a network stream, not a file on the console. */
     bool isProvider() const { return !provider.empty(); }

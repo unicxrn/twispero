@@ -324,6 +324,38 @@ private:
     unsigned long long m_lastMs = 0;
 };
 
+/* L1/R1's stream language, on Browse and on a category's Live tab. Home's
+ * "Popular now" (and its hero) and every category's live list are in it.
+ * A press steps it and says it in a toast at once; Settings take it, the
+ * file is written and Home's list is asked for again only once the presses
+ * have stopped for kDelayMs, or when the screen is left (apply(true)), so
+ * running through the list costs one request, not one a press. */
+class LanguageStepper {
+public:
+    static constexpr unsigned long long kDelayMs = 700;
+
+    /* L1 (next false) or R1 (next true). */
+    void step(bool next);
+    /* What to show now: the language stepped to, or the one in Settings. */
+    std::string shown() const;
+    /* Every frame; force on leaving. True on the frame Settings took a new
+     * language. */
+    bool apply(bool force);
+
+private:
+    std::string m_code;
+    bool m_pending = false;
+    unsigned long long m_dueMs = 0;
+};
+
+/* "German streams", or "" for every language: the note beside a list that
+ * a language narrows. */
+std::string languageNote(const std::string& code);
+
+/* The two above live in TwitchBrowseScreen.cpp, which is built with the
+ * core's headers (evo_twitch_settings.h names its AppSettings); this header
+ * stays clear of them. */
+
 /* A refresh that failed while the old list stays on screen: one toast with
  * the reason (evo_twitch_data.h clears `error` when a refresh starts, so each
  * failure is a change). A failure that leaves nothing to show is the

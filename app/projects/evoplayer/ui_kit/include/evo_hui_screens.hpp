@@ -140,7 +140,7 @@ class NavRail
 /* Shared backdrop: the theme's gradient, slow aurora glows and an optional
  * picture washed in behind them. */
 void draw_backdrop(hui::gfx::DrawList &list, const Context &ctx, std::uint32_t picture = 0,
-                   float picture_alpha = 0.0f);
+                   float picture_alpha = 0.0f, hui::gfx::Rect hole = {});
 
 /* The quality picker (list.rml): one scrolling list. */
 class ListScreen

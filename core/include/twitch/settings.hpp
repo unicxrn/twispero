@@ -32,6 +32,9 @@ struct AppSettings {
   ChatTextSize chatTextSize = ChatTextSize::Medium;
   bool thirdPartyEmotes = true;  // 7TV, BetterTTV and FrankerFaceZ emotes in chat
   bool liveNotifications = true;  // a note when a followed channel goes live
+  bool homePreview = true;        // Home's hero plays its stream, muted
+  // Browse's stream language (kBrowseLanguages). "" is every language.
+  std::string browseLanguage;
 };
 
 // Never throws: a missing, malformed or unknown field keeps its default.

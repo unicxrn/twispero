@@ -25,14 +25,21 @@
 #include "evo_packet_queue.h"
 #include "evo_audio_resample.h"
 #include "evo_adec.h"
+#include "evo_av_clock.h"
 #include "pp_playback.h"
 #include "evo_boot_log.h"
+#include "evo_playback.h"
 
 #ifndef SCREEN_PLAYER
 #define SCREEN_PLAYER 2
 #endif
 
 int sceAudioOutOutput(int handle, const void *ptr);
+
+/* Home's preview: output silence, keep the clock moving. */
+static int g_audio_silent = 0;
+
+void evo_audio_set_silent(int on) { g_audio_silent = on ? 1 : 0; }
 
 /* ---------------------------------------------------------------------------
  * TRANSITIONAL: playback-core and resume state still owned by main.c.
@@ -71,6 +78,8 @@ static int16_t audio_accum[2048 * EVO_AUDIO_MAX_CH];
 int audio_accum_pos = 0;
 
 static int16_t audio_queue[AUDIO_QUEUE_BLOCKS][AUDIO_BLOCK_SAMPLES * EVO_AUDIO_MAX_CH];
+/* The PTS of each queued block's first sample, in microseconds (evo_av_clock.h). */
+static int64_t audio_queue_pts[AUDIO_QUEUE_BLOCKS];
 volatile int audio_queue_read = 0;
 volatile int audio_queue_write = 0;
 volatile int audio_queue_count = 0;
@@ -80,6 +89,7 @@ volatile double audio_clock_seconds = 0.0;
 volatile double audio_pts_seconds = 0.0;
 double first_audio_pts_seconds = -1.0;
 volatile double audio_seek_discard_until = -1.0;
+volatile unsigned audio_blocks_dropped = 0;
 
 int detected_audio_rate = 48000;
 volatile int audio_thread_running = 0;
@@ -88,8 +98,37 @@ pthread_t audio_thread;
 volatile int audio_decode_thread_running = 0;
 pthread_t audio_decode_thread;
 
+/* The decode side's block PTS (decode thread), the clock (output thread) and
+ * the avsync line's timing (output thread). evo_audio_out_reset_clock() puts
+ * them back while neither thread is running, or across a seek. */
+static evo_apts_writer g_apts = { PROSPERO_AUDIO_OUTPUT_RATE, EVO_AV_NOPTS, 0, EVO_AV_NOPTS };
+static evo_aclock g_aclock = { PROSPERO_AUDIO_OUTPUT_RATE, AUDIO_BLOCK_SAMPLES, 0, EVO_AV_NOPTS, 0,
+                               EVO_AV_NOPTS, 0 };
+static evo_avsync_log g_avsync_log = { -1, 0.0 };
 
-static void audio_queue_push(int16_t *buf) {
+void evo_audio_out_reset_clock(int new_stream)
+{
+    evo_apts_reset(&g_apts, PROSPERO_AUDIO_OUTPUT_RATE);
+    evo_aclock_reset(&g_aclock, PROSPERO_AUDIO_OUTPUT_RATE, AUDIO_BLOCK_SAMPLES);
+    evo_avsync_log_reset(&g_avsync_log);
+    if (new_stream)
+        audio_blocks_dropped = 0;
+}
+
+#ifdef EVO_USB_REMOTE
+/* Dev remote `avdrop <ms>`: that much decoded audio is thrown away once, on
+ * the decode thread, the way a skipped segment or a dropped block loses it. */
+static volatile int g_avdrop_ms = 0;
+
+void evo_audio_out_avdrop(int ms)
+{
+    if (ms > 0)
+        g_avdrop_ms = ms;
+}
+#endif
+
+
+static void audio_queue_push(int16_t *buf, int64_t pts_us) {
     int spins = 0;
     /* Wait for space instead of dropping — drops cause choppy audio on UHD */
     while (audio_queue_count >= AUDIO_QUEUE_BLOCKS &&
@@ -97,13 +136,66 @@ static void audio_queue_push(int16_t *buf) {
         usleep(500);
         spins++;
     }
-    if (audio_queue_count >= AUDIO_QUEUE_BLOCKS)
+    if (audio_queue_count >= AUDIO_QUEUE_BLOCKS) {
+        /* Lost for good. The clock no longer minds (the next block brings its
+         * own PTS), but the avsync line counts them. */
+        audio_blocks_dropped++;
         return;
+    }
 
     memcpy(audio_queue[audio_queue_write], buf,
            (size_t)AUDIO_BLOCK_SAMPLES * evo_audio_channels * sizeof(int16_t));
+    audio_queue_pts[audio_queue_write] = pts_us;
     audio_queue_write = (audio_queue_write + 1) % AUDIO_QUEUE_BLOCKS;
     audio_queue_count++;
+}
+
+/*
+ * The clock for the block just handed to the port: its PTS, relative to the
+ * picture's anchor, so first_video_pts_seconds + audio_clock_seconds is the
+ * PTS of the block playing - which is what evo_audio_master_media_us() hands
+ * the video pacing. It used to be a count of samples played, which never
+ * noticed audio that was lost on the way (#1).
+ *
+ * On a jump back to a new timeline the clock carries on and the anchor moves
+ * instead; first_video_pts_seconds moves with it, so every relative clock
+ * stays where it was and the video, whose timestamps jumped too, still lines
+ * up with the audio.
+ */
+static double audio_clock_from_block(int64_t pts_us)
+{
+    const double anchor_s = first_video_pts_seconds;
+    const int64_t anchor_us = anchor_s >= 0.0 ? (int64_t)llround(anchor_s * 1000000.0) : EVO_AV_NOPTS;
+    int64_t shift_us = 0;
+    const double clock = evo_aclock_play(&g_aclock, pts_us, anchor_us, &shift_us);
+    if (shift_us != 0) {
+        if (anchor_us != EVO_AV_NOPTS && first_video_pts_seconds >= 0.0)
+            first_video_pts_seconds = (double)(anchor_us + shift_us) / 1000000.0;
+        evo_boot_log("avsync: audio timestamps went back %.3f s, new anchor",
+                     (double)-shift_us / 1000000.0);
+    }
+    return clock;
+}
+
+/*
+ * The "avsync" line in evo.log: the PTS of the block now playing and of the
+ * picture on screen, both relative to the anchor, how far apart they are (the
+ * lip-sync offset, + is sound ahead) and how many decoded blocks were dropped.
+ * Every 10 s, and at once when the offset moves more than 40 ms
+ * (evo_av_clock.h). Nothing with no picture to compare (audio only).
+ */
+static void audio_note_avsync(void)
+{
+    const double anchor = first_video_pts_seconds;
+    const int64_t shown_us = g_pp_pb.display_pts_us;
+    if (!g_pp_pb.active || shown_us <= 0 || anchor < 0.0)
+        return;
+    const double a = audio_clock_seconds;
+    const double v = (double)shown_us / 1000000.0 - anchor;
+    const double off_ms = (a - v) * 1000.0;
+    if (evo_avsync_log_due(&g_avsync_log, now_ms(), off_ms))
+        evo_boot_log("avsync a=%.3f v=%.3f off=%+.0fms drops=%u", a, v, off_ms,
+                     (unsigned)audio_blocks_dropped);
 }
 
 void *audio_output_thread(void *arg) {
@@ -143,11 +235,12 @@ void *audio_output_thread(void *arg) {
             usleep(2000);
             continue;
         }
-        if (screen == 2 && !player_paused && audio_handle >= 1) {
+        if (evo_pb_presenting() && !player_paused && audio_handle >= 1) {
             /*
-             * Compare like-for-like: audio_clock is from t=0 of this session,
-             * video must be relative to first video PTS (not absolute PTS).
-             * Absolute compare freezes easy 720p/YouTube when clocks diverge.
+             * Compare like-for-like: audio_clock is the playing block's PTS
+             * relative to the first video PTS, so video must be relative to
+             * it too (not absolute PTS). Absolute compare freezes easy
+             * 720p/YouTube when clocks diverge.
              */
             /*
              * No anchor yet means nothing has been presented since the last
@@ -205,11 +298,25 @@ void *audio_output_thread(void *arg) {
                 continue;
             }
             if (audio_queue_count > 0) {
-                sceAudioOutOutput(audio_handle, audio_queue[audio_queue_read]);
+                const int64_t block_pts = audio_queue_pts[audio_queue_read];
+                const double anchor_s = first_video_pts_seconds;
+                if (evo_aclock_stale(&g_aclock, block_pts,
+                                     anchor_s >= 0.0 ? (int64_t)llround(anchor_s * 1000000.0)
+                                                     : EVO_AV_NOPTS)) {
+                    /* Decoded before the seek that just cleared the queue. */
+                    evo_boot_log("avsync: skipped a block from before the seek (%.3f s, anchor %.3f s)",
+                                 (double)block_pts / 1000000.0, anchor_s);
+                    audio_queue_read = (audio_queue_read + 1) % AUDIO_QUEUE_BLOCKS;
+                    audio_queue_count--;
+                    continue;
+                }
+                sceAudioOutOutput(audio_handle,
+                                  g_audio_silent ? silence : audio_queue[audio_queue_read]);
                 audio_samples_played += AUDIO_BLOCK_SAMPLES;
-                audio_clock_seconds = (double)audio_samples_played / 48000.0;
+                audio_clock_seconds = audio_clock_from_block(block_pts);
                 audio_queue_read = (audio_queue_read + 1) % AUDIO_QUEUE_BLOCKS;
                 audio_queue_count--;
+                audio_note_avsync();
             } else {
                 /*
                  * Soft underrun: silence without advancing media clock.
@@ -263,8 +370,10 @@ static int16_t audio_float_to_s16(float v) {
     return (int16_t)(v * 30000.0f);
 }
 
+/* pts_us: the frame's PTS in microseconds, or EVO_AV_NOPTS. */
 static void mix_audio_frame_to_queue(
-    AVFrame *frame
+    AVFrame *frame,
+    int64_t pts_us
 ) {
     if (
         !frame ||
@@ -307,6 +416,17 @@ static void mix_audio_frame_to_queue(
     }
 
     /*
+     * What comes out of swr_convert first is the input it still held from the
+     * frames before (`delay` samples at the input rate), so the first output
+     * sample is that much older than this frame. No PTS: the block PTS carries
+     * on from the samples already counted.
+     */
+    evo_apts_frame(&g_apts,
+                   pts_us == EVO_AV_NOPTS
+                       ? EVO_AV_NOPTS
+                       : pts_us - av_rescale(delay, 1000000, input_rate));
+
+    /*
      * Grow-only scratch instead of av_samples_alloc/av_freep per packet. This
      * runs on every audio packet - about 43 a second for AAC - and the
      * capacity only ever changes when the stream layout does, so the malloc
@@ -345,6 +465,27 @@ static void mix_audio_frame_to_queue(
         const int ch = evo_audio_channels;
         int index = 0;
 
+#ifdef EVO_USB_REMOTE
+        {
+            static int avdrop_left = 0;   /* output samples still to throw away */
+            static int avdrop_ms = 0;
+            const int asked = g_avdrop_ms;
+            if (asked > 0) {
+                g_avdrop_ms = 0;
+                avdrop_ms = asked;
+                avdrop_left = (int)((long long)asked * PROSPERO_AUDIO_OUTPUT_RATE / 1000);
+            }
+            if (avdrop_left > 0) {
+                int n = converted < avdrop_left ? converted : avdrop_left;
+                evo_apts_skip(&g_apts, n);
+                index += n;
+                avdrop_left -= n;
+                if (avdrop_left == 0)
+                    evo_boot_log("avdrop: threw away %d ms of decoded audio", avdrop_ms);
+            }
+        }
+#endif
+
         /*
          * Both buffers are interleaved with the same channel count, so this is
          * a straight copy - it just has to stop at each accumulator block
@@ -363,6 +504,7 @@ static void mix_audio_frame_to_queue(
                    &samples[(size_t)index * ch],
                    (size_t)run * (size_t)ch * sizeof(int16_t));
 
+            evo_apts_write(&g_apts, audio_accum_pos, run);
             audio_accum_pos += run;
             audio_samples_decoded += run;
             index += run;
@@ -380,7 +522,7 @@ static void mix_audio_frame_to_queue(
                     break;
                 }
 
-                audio_queue_push(audio_accum);
+                audio_queue_push(audio_accum, evo_apts_block(&g_apts));
                 audio_accum_pos = 0;
             }
         }
@@ -407,7 +549,7 @@ void *audio_decode_thread_func(void *arg) {
          * video is held would advance the clock against frames that have not
          * been decoded yet, and every one of them would arrive late.
          */
-        if (player_paused || pb_prebuffer_hold || pb_scrub_hold || screen != 2) {
+        if (player_paused || pb_prebuffer_hold || pb_scrub_hold || !evo_pb_presenting()) {
             /* Parked - see the note on the video decode thread. */
             usleep(5000);
             continue;
@@ -514,14 +656,18 @@ void *audio_decode_thread_func(void *arg) {
                     af->nb_samples = produced / (int)sizeof(int16_t) / ch;
                     if (af->nb_samples > 0 &&
                         av_frame_get_buffer(af, 0) == 0) {
+                        int64_t pts_us = EVO_AV_NOPTS;
                         memcpy(af->data[0], g_adec_pcm, (size_t)produced);
                         if (pkt->pts != AV_NOPTS_VALUE && play_fmt && audio_stream_index >= 0) {
                             audio_pts_seconds = pkt->pts *
                                 av_q2d(play_fmt->streams[audio_stream_index]->time_base);
                             if (first_audio_pts_seconds < 0.0)
                                 first_audio_pts_seconds = audio_pts_seconds;
+                            pts_us = av_rescale_q(pkt->pts,
+                                                  play_fmt->streams[audio_stream_index]->time_base,
+                                                  AV_TIME_BASE_Q);
                         }
-                        mix_audio_frame_to_queue(af);
+                        mix_audio_frame_to_queue(af, pts_us);
                     }
                     av_frame_unref(af);
                 }
@@ -530,13 +676,18 @@ void *audio_decode_thread_func(void *arg) {
 
         if (!handled_natively && avcodec_send_packet(audio_ctx, pkt) == 0) {
             while (audio_decode_thread_running && avcodec_receive_frame(audio_ctx, af) == 0) {
-                if (af->pts != AV_NOPTS_VALUE && play_fmt && audio_stream_index >= 0) {
-                    audio_pts_seconds = af->pts * av_q2d(play_fmt->streams[audio_stream_index]->time_base);
+                int64_t pts_us = EVO_AV_NOPTS;
+                /* A frame's own PTS, else the decoder's guess from the DTS. */
+                const int64_t pts = af->pts != AV_NOPTS_VALUE ? af->pts : af->best_effort_timestamp;
+                if (pts != AV_NOPTS_VALUE && play_fmt && audio_stream_index >= 0) {
+                    audio_pts_seconds = pts * av_q2d(play_fmt->streams[audio_stream_index]->time_base);
                     if (first_audio_pts_seconds < 0.0)
                         first_audio_pts_seconds = audio_pts_seconds;
+                    pts_us = av_rescale_q(pts, play_fmt->streams[audio_stream_index]->time_base,
+                                          AV_TIME_BASE_Q);
                 }
 
-                mix_audio_frame_to_queue(af);
+                mix_audio_frame_to_queue(af, pts_us);
                 av_frame_unref(af);
             }
         }

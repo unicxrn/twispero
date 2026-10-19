@@ -186,6 +186,7 @@ void TwitchBrowseScreen::set(const evo_hui_twitch_browse_params_t &p)
 {
     status_ = p.status;
     error_ = str(p.error);
+    language_ = str(p.language);
     const int n = std::clamp(p.category_count, 0, EVO_HUI_TWITCH_BROWSE_CATEGORIES);
     categories_.resize(static_cast<std::size_t>(n));
     for (int i = 0; i < n; ++i)
@@ -236,7 +237,10 @@ void TwitchBrowseScreen::draw(DrawList &list, const Context &ctx) const
         list.push_opacity(in * header_alpha(page));
         const float dy = 16.0f * (1.0f - in);
         ui::text(list, fonts.display, "Browse", kLeft - 2, kTitleY + dy, 56, p.text);
-        ui::text(list, fonts.regular, "Top categories right now", kLeft, kLineY + dy, 26, p.text_muted);
+        ui::text(list, fonts.regular,
+                 language_.empty() ? std::string("Top categories right now")
+                                   : "Top categories right now \xC2\xB7 " + language_,
+                 kLeft, kLineY + dy, 26, p.text_muted);
         list.pop_opacity();
     }
 
@@ -261,7 +265,7 @@ void TwitchBrowseScreen::draw(DrawList &list, const Context &ctx) const
     if (n > 0 || status_ == EVO_HUI_TWITCH_LOADING)
         draw_hint_band(list, ctx);
 
-    ui::Hint hints[3];
+    ui::Hint hints[4];
     int h = 0;
     if (rail_focused_)
         h = rail_hints(hints);
@@ -269,6 +273,7 @@ void TwitchBrowseScreen::draw(DrawList &list, const Context &ctx) const
     {
         if (n > 0)
             hints[h++] = {ui::Button::cross, "Open"};
+        hints[h++] = {ui::Button::l1, "Stream language", ui::Button::r1};
         hints[h++] = {ui::Button::triangle, "Refresh"};
         hints[h++] = {ui::Button::circle, "Back"};
     }
@@ -323,6 +328,7 @@ void TwitchCategoryScreen::set(const evo_hui_twitch_category_params_t &p)
         art_motion_.art_in = 0.0f;
     name_ = str(p.name);
     viewers_ = p.viewers;
+    language_ = str(p.language);
     art_ = twitch_picture(p.art);
     art_motion_.track(art_);
 
@@ -439,8 +445,12 @@ void TwitchCategoryScreen::draw_header(DrawList &list, const Context &ctx, float
 
     ui::text(list, fonts.display, name_fit_.get(fonts.display, name_, 56, kRight - kNameX), kNameX - 2, kTitleY, 56,
              p.text);
-    if (viewers_ >= 0)
-        ui::text(list, fonts.regular, format_viewers(viewers_) + " watching", kNameX, kLineY, 26, p.text_muted);
+    /* The viewers are everyone's; a language narrows only the live list. */
+    std::string line = viewers_ >= 0 ? format_viewers(viewers_) + " watching" : std::string();
+    if (!language_.empty() && !on_clips())
+        line += (line.empty() ? "" : " \xC2\xB7 ") + language_;
+    if (!line.empty())
+        ui::text(list, fonts.regular, line, kNameX, kLineY, 26, p.text_muted);
     list.pop_transform();
     list.pop_opacity();
 
@@ -522,7 +532,7 @@ void TwitchCategoryScreen::draw(DrawList &list, const Context &ctx) const
     if (n > 0 || list_status() == EVO_HUI_TWITCH_LOADING)
         draw_hint_band(list, ctx);
 
-    ui::Hint hints[4];
+    ui::Hint hints[5];
     int h = 0;
     if (rail_focused_)
         h = rail_hints(hints);
@@ -535,6 +545,8 @@ void TwitchCategoryScreen::draw(DrawList &list, const Context &ctx) const
         }
         else if (focus_ == EVO_HUI_TWITCH_FOCUS_FILTERS && filter_cursor_ != filter_)
             hints[h++] = {ui::Button::cross, "Select"};
+        if (!on_clips())
+            hints[h++] = {ui::Button::l1, "Language", ui::Button::r1};
         hints[h++] = {ui::Button::triangle, "Refresh"};
         hints[h++] = {ui::Button::circle, "Back"};
     }

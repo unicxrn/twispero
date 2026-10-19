@@ -63,6 +63,18 @@ void evo_data_path_rebind(void);
  */
 int evo_mkdir(const char *path);
 
+/*
+ * Where the diagnostics go: evo.log and, in --usb-remote builds, the dev
+ * remote's evo_cmd / evo_status / evo_ui.json. No trailing slash.
+ *
+ * The USB stick, /mnt/usb0, when one is in. A dev build (EVO_USB_REMOTE) with
+ * no stick falls back to <data root>/dev, so a console test doesn't need a
+ * stick; a release build only ever logs to the stick. Returns NULL while
+ * neither is writable (before the self-unjail, or a release build with no
+ * stick), and callers try again later. Cached once found.
+ */
+const char *evo_diag_dir(void);
+
 #ifdef __cplusplus
 }
 #endif

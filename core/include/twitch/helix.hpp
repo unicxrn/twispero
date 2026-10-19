@@ -91,11 +91,12 @@ class HelixClient {
   // same pagination as followedStreams. Needs scope user:read:follows.
   std::vector<FollowedChannel> followedChannels(const std::string& userId, int max = 300);
 
-  // POST /chat/messages, JSON body {broadcaster_id, sender_id, message}.
-  // Needs scope user:write:chat. The message is sent through nlohmann's own
-  // JSON string escaping (quotes, control characters).
+  // POST /chat/messages, JSON body {broadcaster_id, sender_id, message}, plus
+  // reply_parent_message_id when replyParentId is not empty (Twitch's id for
+  // the line being answered). Needs scope user:write:chat. The message is
+  // sent through nlohmann's own JSON string escaping (quotes, control characters).
   SendResult sendChat(const std::string& broadcasterId, const std::string& senderId,
-                      const std::string& message);
+                      const std::string& message, const std::string& replyParentId = {});
 
   // POST /clips?broadcaster_id=<id>, no body: a clip of that channel's live
   // stream, made by the token's user. Needs scope clips:edit. Twitch answers

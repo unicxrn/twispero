@@ -15,3 +15,23 @@ compile_commands.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Assistant and agent files. None of them belong in the source.
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude/
+.cursor/
+.cursorrules
+.cursorignore
+.mcp.json
+.serena/
+.gemini/
+.codex/
+.continue/
+.aider*
+.windsurf*
+.github/copilot-instructions.md
+.superpowers/
+docs/superpowers/
+graphify-out/

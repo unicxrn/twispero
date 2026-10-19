@@ -2356,6 +2356,7 @@ void evo_agc_runtime_set_player_mode(int is_player)
 {
     if (g_agc_dev.is_player_mode == is_player)
         return;
+    const int was = g_agc_dev.is_player_mode;
     g_agc_dev.is_player_mode = is_player;
     /* whatever the last session drew says nothing about the next one */
     g_video_px_valid = 0;
@@ -2370,9 +2371,17 @@ void evo_agc_runtime_set_player_mode(int is_player)
     }
     /* a new file decides HDR10 by its own first frame, not the last file's */
     g_agc_dev.last_video_trc = -1;
-    if (is_player) {
+    if (is_player == 1 && was == 0) {
         /* Clear both scanout buffers once upon entering player mode so letterbox borders are dark */
         agc_clear_scanouts(0xff100d0du);
+        memset(g_agc_dev.stage_cache, 0, sizeof(g_agc_dev.stage_cache));
+    } else if (is_player) {
+        /* A picture inside a menu (2), or the player taking it over: the
+         * buffer on screen still shows the page and must not be wiped from
+         * the CPU, or the panel flashes dark. Both are cleared just before
+         * they are next drawn into instead, as a new video rect does. */
+        g_agc_dev.ui_dirty[0] = g_agc_dev.ui_dirty[1] = 1;
+        g_agc_dev.video_pts[0] = g_agc_dev.video_pts[1] = INT64_MIN;
         memset(g_agc_dev.stage_cache, 0, sizeof(g_agc_dev.stage_cache));
     }
 }

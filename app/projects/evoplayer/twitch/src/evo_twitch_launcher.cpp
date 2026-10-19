@@ -75,7 +75,9 @@
 // or stop playback while the start worker is inside startPlaybackSource().
 // evo_twitch_launcher_busy() says when that is, and Application uses it to:
 //   - hold the soft close's first stage (the one that calls stopPlayback()),
-//   - keep pad input away from the screens, so no tile starts something else,
+//   - keep pad input away from the screens, so no tile starts something else
+//     (not while it is Home's picture that opens: a play request then
+//     waits, see request()),
 //   - make shutdown() wait (up to 40 s) before it stops playback.
 // When the worker returns it swaps g_start_owner Running -> Reported; from then
 // on it never touches the controller again, so busy() drops and the main thread
@@ -119,6 +121,24 @@
 // broadcast still being recorded has no length yet: the player treats it as
 // live, it saves nothing, and its quality doesn't switch.
 //
+// Home's live picture (Kind::Preview, evo_twitch_preview()) takes the same
+// path as a play request, with these differences:
+//   - it asks for kPreviewQuality, not Settings' quality, starts quiet
+//     (PlaybackSource::quiet: no toasts) with the sound silent, and never
+//     opens the player or joins chat;
+//   - it is the one start that leaves the pad alive: a play request while
+//     it starts waits (g_pending) and goes once the start worker is back,
+//     after the picture is stopped on the main thread;
+//   - every frame, previewTick() drops a picture that died (an error, the
+//     end of the stream, a decoder that gave up, no picture after
+//     kPreviewNoPictureMs) by stopping it on the main thread;
+//   - a lookup or start that fails, or a picture that dies, holds the next
+//     try back (kPreviewRetryMs, doubling up to kPreviewRetryMaxMs) and
+//     leaves that channel alone for kPreviewSkipMs;
+//   - X on the hero takes the picture over (evo_twitch_preview_take()) only
+//     when it already plays in the quality Settings would pick; otherwise
+//     the hero plays like any other card, and the picture stops first.
+//
 // Every piece of state here is file scope and trivially constructible (EVO
 // keeps static initialization trivial). The one non-trivial object, the
 // PlaybackSource, is handed to the start worker as its argument and freed by
@@ -160,6 +180,17 @@
 #include "twitch/streams.hpp"
 #include "twitch/videos.hpp"
 
+/* Declared here rather than via the media headers: those pull in ffmpeg,
+ * and this file only needs the three switches for Home's muted picture and
+ * the two signs that it died. */
+extern "C" {
+void evo_audio_set_silent(int on);
+void evo_pb_set_presenting(int on);
+void evo_pb_set_quiet(int on);
+int evo_pb_is_eof(void);
+int evo_pb_decode_fatal(void);
+}
+
 namespace {
 
 constexpr size_t kStackBytes = 2 * 1024 * 1024;
@@ -184,6 +215,17 @@ constexpr const char* kProviderVideo = "twitch-vod";
 constexpr const char* kProviderClip = "twitch-clip";
 // A video's position goes to its progress this often while it plays.
 constexpr long long kProgressSaveMs = 15000;
+// Home's live picture: small (an 800x450 box), so the closest rung at or
+// below 480p30. After a failure the next try waits kPreviewRetryMs, twice
+// that after a second one in a row, and so on up to kPreviewRetryMaxMs; the
+// channel that failed is left alone for kPreviewSkipMs. A picture that has
+// started but shows nothing for kPreviewNoPictureMs counts as failed.
+constexpr const char* kPreviewQuality = "480p30";
+constexpr const char* kPreviewClosing = "Closing once the live preview has stopped\xE2\x80\xA6";
+constexpr long long kPreviewRetryMs = 15000;
+constexpr long long kPreviewRetryMaxMs = 5 * 60 * 1000;
+constexpr long long kPreviewSkipMs = 10 * 60 * 1000;
+constexpr long long kPreviewNoPictureMs = 20000;
 
 // ---- Mailbox: written by the resolve worker, read by the pump ----
 enum Outcome : int { kOutNothing = 0, kOutStream = 1, kOutError = 2 };
@@ -202,6 +244,7 @@ struct Mailbox {
   evo_twitch_quality_t qualities[EVO_TWITCH_QUALITY_MAX];  // twitch::qualityMenu()
   int quality_count;
   int quality_chosen;  // the chosen variant's row, -1 if it has none
+  int quality_wanted;  // Kind::Preview: the row Settings' quality would pick, -1 otherwise
   evo_twitch_now_playing_t info;  // the channel, for the OSD (empty for a quality switch)
 };
 pthread_mutex_t g_box_mx = PTHREAD_MUTEX_INITIALIZER;
@@ -231,13 +274,14 @@ struct VideoMeta {
 // ---- What the resolve worker is asked to do ----
 // Written by the main thread before it spawns the worker (pthread_create
 // orders that), read by the worker; never while a worker runs.
-enum class Kind { Auto, Play, Quality, Video, Clip };
+enum class Kind { Auto, Play, Quality, Video, Clip, Preview };
 Kind g_req_kind = Kind::Auto;
 char g_req_id[96];       // Play: the normalized login; Video: the id; Clip: the slug;
                          // Quality: the item playing
 Media g_req_media = Media::Live;  // Kind::Quality: what is being switched
 VideoMeta g_req_meta;    // Kind::Video and Kind::Clip: the card's details
 char g_req_quality[32];  // twitch::pickQuality(): Settings' default, or the picker's row
+char g_req_wanted[32];   // Kind::Preview: Settings' default, to tell whether the picture is in it
 
 // The autoplay check's decision, between the worker (Deciding -> On) and a
 // play request on the main thread (Deciding -> StoodDown). One
@@ -271,6 +315,21 @@ struct Request {
 enum class Phase { Idle, Resolving, Leaving, Starting };
 Phase g_phase = Phase::Idle;
 Kind g_kind = Kind::Auto;  // what the current Resolving/Leaving/Starting is for
+// Home's muted live picture. Main thread only. While it is up, a real play
+// request stops it and goes ahead; it never counts as "something else".
+bool g_home_preview = false;
+bool g_preview_cancel = false;  // leave Home, or a play request, during the lookup or start
+// The picture plays in the quality Settings would pick, so X can take it over.
+bool g_preview_full = false;
+// Since when it has been up, and whether its first picture has shown yet.
+long long g_preview_up_ms = 0;
+bool g_preview_seen = false;
+// Failures in a row, when the next try may come, and the channel that failed
+// last with when it may be tried again (see kPreviewRetryMs).
+int g_preview_failures = 0;
+long long g_preview_wait_until_ms = 0;
+char g_preview_failed[96];
+long long g_preview_failed_until_ms = 0;
 bool g_in_pump = false;
 bool g_autoplay_tried = false;    // evo_twitch_launcher_start() ran (once per launch)
 evo::ScreenId g_auto_screen = evo::ScreenId::TwitchHome;  // where the autoplay started
@@ -393,11 +452,24 @@ std::string toastName(const std::string& name, const std::string& login) {
   return evo_twitch_text::channelName(name, login, true);
 }
 
+void dropHomePreview();
+
+// Home's picture: no sound, decode while the player screen isn't up, and the
+// media pipeline's toasts in the log only. All three on before it opens and
+// off once it is dropped or taken over.
+void previewSwitches(bool on) {
+  evo_audio_set_silent(on ? 1 : 0);
+  evo_pb_set_presenting(on ? 1 : 0);
+  evo_pb_set_quiet(on ? 1 : 0);
+}
+
 // Another source owns the player or is starting a stream of its own (see the
 // top of the file): the toast for turning a play request down, or nullptr
 // when it may go ahead. What an error or a finished file left behind does not
 // count; the caller stops it before starting.
 const char* otherPlayback(evo::IPlaybackController* pb, evo::ScreenManager* sm) {
+  // Home's muted picture is stopped by the caller before a real play.
+  if (g_home_preview) return nullptr;
   if (sm->isPlaybackScreen(sm->getCurrentScreenId())) return kOtherPlaying;
   switch (pb->getPlaybackState()) {
     case evo::PlaybackState::Stopped:
@@ -458,6 +530,7 @@ void postNote(const std::string& note) {
 struct Resolved {
   twitch::Variant chosen;
   std::vector<twitch::QualityOption> menu;
+  std::string wanted;  // Kind::Preview: the variant Settings' quality would pick
 };
 
 // What the OSD shows of a channel: login and display name, and what Twitch
@@ -491,6 +564,7 @@ void postStream(const Resolved& r, const std::string& title, const std::string& 
   copyUtf8(g_box.item, sizeof g_box.item, item);
   g_box.quality_count = 0;
   g_box.quality_chosen = -1;
+  g_box.quality_wanted = -1;
   for (const twitch::QualityOption& q : r.menu) {
     if (g_box.quality_count >= EVO_TWITCH_QUALITY_MAX) break;
     evo_twitch_quality_t& row = g_box.qualities[g_box.quality_count];
@@ -500,6 +574,7 @@ void postStream(const Resolved& r, const std::string& title, const std::string& 
     row.height = q.height;
     row.fps = q.fps;
     if (q.name == r.chosen.name) g_box.quality_chosen = g_box.quality_count;
+    if (!r.wanted.empty() && q.name == r.wanted) g_box.quality_wanted = g_box.quality_count;
     ++g_box.quality_count;
   }
   pthread_mutex_unlock(&g_box_mx);
@@ -581,6 +656,7 @@ Resolved resolveStream(twitch::GqlClient& gql, const std::string& login) {
   Resolved r;
   r.chosen = twitch::pickQuality(variants, g_req_quality);
   r.menu = twitch::qualityMenu(variants);
+  if (g_req_wanted[0]) r.wanted = twitch::pickQuality(variants, g_req_wanted).name;
   evo_log("twitch: picked %s (%s) %dx%d for \"%s\"", r.chosen.label.c_str(), r.chosen.name.c_str(),
           r.chosen.width, r.chosen.height, g_req_quality);
   if (r.chosen.uri.empty() || r.chosen.uri.size() >= sizeof g_box.url)
@@ -781,7 +857,7 @@ void* resolveWorker(void*) {
   const char* user = evoTwitchRun(
       [] {
         twitch::GqlClient gql(evoTwitchHttp());
-        if (g_req_kind == Kind::Play)
+        if (g_req_kind == Kind::Play || g_req_kind == Kind::Preview)
           resolvePlay(gql, g_req_id);
         else if (g_req_kind == Kind::Video || g_req_kind == Kind::Clip)
           resolveVideo(gql, g_req_id, mediaOf(g_req_kind));
@@ -837,14 +913,19 @@ void beginResolve(Kind kind, const char* id, const char* quality) {
   g_req_kind = kind;
   snprintf(g_req_id, sizeof g_req_id, "%s", id ? id : "");
   snprintf(g_req_quality, sizeof g_req_quality, "%s", quality ? quality : "");
+  snprintf(g_req_wanted, sizeof g_req_wanted, "%s",
+           kind == Kind::Preview ? evo_twitch::settings().quality.c_str() : "");
   g_auto_gate = kGateDeciding;
   g_note_ready = false;
   g_resolve_done = false;
   if (!spawn(&g_resolve_thread, resolveWorker, nullptr)) {
-    showError(kind == Kind::Quality ? "Couldn't change the quality"
-              : kind == Kind::Video ? "Couldn't start the video"
-              : kind == Kind::Clip  ? "Couldn't start the clip"
-                                    : "Couldn't start the stream");
+    if (kind != Kind::Preview)
+      showError(kind == Kind::Quality ? "Couldn't change the quality"
+                : kind == Kind::Video ? "Couldn't start the video"
+                : kind == Kind::Clip  ? "Couldn't start the clip"
+                                      : "Couldn't start the stream");
+    else
+      evo_log_error("twitch: home preview: the lookup thread would not start");
     return;
   }
   g_kind = kind;
@@ -852,9 +933,9 @@ void beginResolve(Kind kind, const char* id, const char* quality) {
 }
 
 // A new stream, video or clip starts in the default quality from Settings
-// (read here: the settings are main thread only).
+// (read here: the settings are main thread only). Home's picture is small.
 void beginPlay(Kind kind, const char* id) {
-  beginResolve(kind, id, evo_twitch::settings().quality.c_str());
+  beginResolve(kind, id, kind == Kind::Preview ? kPreviewQuality : evo_twitch::settings().quality.c_str());
 }
 
 // A play request of any kind: its details for the worker, then the lookup.
@@ -892,15 +973,25 @@ bool launchStart(const Mailbox& box, Media media, const char* title, const char*
   job->src.is_live = media == Media::Live;
   // A past broadcast of a stream that is still on: from its start, not its end.
   job->src.from_start = media == Media::Video;
+  // Home's picture: a failure is logged, not toasted over Home.
+  job->src.quiet = g_kind == Kind::Preview;
   job->resume = media == Media::Live ? 0.0 : resume;
   g_start_job = job;
 
   g_start_ok = false;
   g_start_owner = kRunning;
+  // Before the stream opens, so the first samples are silent and decode is
+  // not parked on the Home screen.
+  if (g_kind == Kind::Preview) previewSwitches(true);
   if (!spawn(&g_start_thread, startWorker, g_start_job)) {
     delete g_start_job;
     g_start_job = nullptr;
-    showError("Playback failed");
+    if (g_kind == Kind::Preview) {
+      previewSwitches(false);
+      evo_log_error("twitch: home preview: the start thread would not start");
+    } else {
+      showError("Playback failed");
+    }
     return false;
   }
 
@@ -955,6 +1046,8 @@ bool okToStart(Kind kind, const Mailbox& box, evo::IPlaybackController* pb,
   }
   // A play request: the user asked for this channel, from whatever screen
   // they are on now, unless another source took the player meanwhile.
+  // Home's picture, if it is still up, stops here so this stream can open.
+  if (g_home_preview) dropHomePreview();
   if (const char* why = otherPlayback(pb, sm)) {
     evo_log("twitch: not starting %s: screen %d, player state %d", box.item,
             static_cast<int>(screen), static_cast<int>(state));
@@ -1101,6 +1194,122 @@ void pumpLeaving() {
   showToast(note);
 }
 
+bool onTwitchHome() {
+  evo::ScreenManager* sm = evo::Application::getInstance().getScreenManager();
+  return sm && sm->getCurrentScreenId() == evo::ScreenId::TwitchHome;
+}
+
+// Drops the muted picture: silence and decode off, and its stream stopped.
+// Main thread, never while the start worker is inside the controller (the
+// callers check busy()).
+void dropHomePreview() {
+  g_home_preview = false;
+  g_preview_full = false;
+  previewSwitches(false);
+  evo::IPlaybackController* pb = evo::Application::getInstance().getPlaybackController();
+  if (pb && pb->getPlaybackState() != evo::PlaybackState::Stopped) pb->stopPlayback();
+  g_playing.item[0] = '\0';
+  g_playing.quality_count = 0;
+}
+
+// The picture of `item` didn't open, or died: the next try waits, longer
+// each time in a row, and that channel waits longer still.
+void previewFailed(const char* item) {
+  const long long now = monoMs();
+  const int doublings = std::min(g_preview_failures, 5);
+  ++g_preview_failures;
+  const long long wait = std::min(kPreviewRetryMs << doublings, kPreviewRetryMaxMs);
+  g_preview_wait_until_ms = now + wait;
+  copyUtf8(g_preview_failed, sizeof g_preview_failed, item ? item : "");
+  g_preview_failed_until_ms = now + kPreviewSkipMs;
+  evo_log("twitch: home preview: %s failed (%d in a row), the next try in %lld s", g_preview_failed,
+          g_preview_failures, wait / 1000);
+}
+
+// Whether a picture of `login` may be started now (see previewFailed()).
+bool previewMayTry(const char* login) {
+  const long long now = monoMs();
+  if (now < g_preview_wait_until_ms) return false;
+  return now >= g_preview_failed_until_ms || strcmp(login, g_preview_failed) != 0;
+}
+
+void onPreviewResolved(const Mailbox& box) {
+  const bool cancel = g_preview_cancel || g_pending;
+  g_preview_cancel = false;
+  if (cancel) {
+    evo_log("twitch: home preview dropped");
+    startPending();
+    return;
+  }
+  if (box.outcome != kOutStream) {
+    // Offline since the list was made, for subscribers only, refused, no
+    // connection: each says why in the log, never in a toast.
+    evo_log("twitch: home preview: %s would not open (%s)", g_req_id, box.outcome == kOutError ? box.error : "-");
+    previewFailed(g_req_id);
+    return;
+  }
+  if (appQuitting() || !onTwitchHome()) {
+    evo_log("twitch: home preview: not on Home, not starting %s", box.item);
+    return;
+  }
+  // Only into an empty player. What an error or a finished stream left there
+  // is stopped here, on the main thread, as okToStart() does for a play
+  // request; anything else means something else plays, and it stays.
+  evo::IPlaybackController* pb = evo::Application::getInstance().getPlaybackController();
+  if (!pb) return;
+  const evo::PlaybackState state = pb->getPlaybackState();
+  if (state == evo::PlaybackState::Error || state == evo::PlaybackState::Finished) {
+    pb->stopPlayback();
+  } else if (state != evo::PlaybackState::Stopped) {
+    evo_log("twitch: home preview: the player is busy (state %d), not starting %s", static_cast<int>(state),
+            box.item);
+    return;
+  }
+  char still[160];
+  snprintf(still, sizeof still, "Still starting %s%s", box.name, kEllipsis);
+  if (!launchStart(box, Media::Live, box.title, box.name, box.info, nullptr, 0, still)) {
+    previewFailed(box.item);
+    return;
+  }
+  g_preview_full = box.quality_chosen >= 0 && box.quality_chosen == box.quality_wanted;
+  evo_log("twitch: home preview: starting %s in %s", box.item,
+          box.quality_chosen >= 0 ? box.qualities[box.quality_chosen].name : "?");
+}
+
+// Every frame, while the picture is up: it is dropped once it has died (an
+// error, the end of the stream, a decoder that gave up, or no picture for
+// kPreviewNoPictureMs), stopped here on the main thread, and the next try
+// waits. A picture that shows clears the failures. Never while busy().
+void previewTick() {
+  if (!g_home_preview || evo_twitch_launcher_busy()) return;
+  evo::IPlaybackController* pb = evo::Application::getInstance().getPlaybackController();
+  char item[sizeof g_playing.item];
+  memcpy(item, g_playing.item, sizeof item);
+  const char* why = nullptr;
+  if (!ownStreamPlaying(pb))
+    why = "it stopped";
+  else if (evo_pb_decode_fatal())
+    why = "the decoder gave up";
+  else if (evo_pb_is_eof())
+    why = "the stream ended";
+  else if (pb->isPictureReady()) {
+    if (!g_preview_seen) {
+      g_preview_seen = true;
+      g_preview_failures = 0;
+      evo_log("twitch: home preview: %s shows", item);
+    }
+    return;
+  } else if (!g_preview_seen && monoMs() - g_preview_up_ms >= kPreviewNoPictureMs) {
+    why = "no picture came";
+  } else {
+    return;
+  }
+  evo_log("twitch: home preview: %s dropped, %s (player state %d)", item, why,
+          pb ? static_cast<int>(pb->getPlaybackState()) : -1);
+  dropHomePreview();
+  previewFailed(item);
+}
+
 void onResolved() {
   pthread_join(g_resolve_thread, nullptr);
   g_phase = Phase::Idle;  // unless a start worker is launched below
@@ -1113,6 +1322,10 @@ void onResolved() {
 
   if (kind == Kind::Quality) {
     onQualityResolved(box);
+    return;
+  }
+  if (kind == Kind::Preview) {
+    onPreviewResolved(box);
     return;
   }
 
@@ -1168,6 +1381,32 @@ void onStarted() {
   evo::IPlaybackController* pb = app.getPlaybackController();
   evo::ScreenManager* sm = app.getScreenManager();
   g_playing.quality_count = 0;
+  if (g_kind == Kind::Preview) {
+    // Left Home, quitting, or a play request came in while it started: the
+    // picture goes, and the play request (if any) goes next.
+    const bool wanted = !appQuitting() && !g_preview_cancel && !g_pending && onTwitchHome();
+    if (g_start_ok && wanted) {
+      evo_log("twitch: home preview: %s is up", g_starting.item);
+      memcpy(&g_playing, &g_starting, sizeof g_playing);
+      g_home_preview = true;
+      g_preview_up_ms = monoMs();
+      g_preview_seen = false;
+    } else {
+      if (g_start_ok) {
+        evo_log("twitch: home preview: stopping %s", g_starting.item);
+      } else {
+        evo_log_error("twitch: home preview: %s didn't start", g_starting.item);
+        previewFailed(g_starting.item);
+      }
+      // A failed start can leave Error behind: stopped too, so the next
+      // start finds an empty player.
+      dropHomePreview();
+    }
+    g_preview_cancel = false;
+    startPending();
+    evo_boot_log_flush();
+    return;
+  }
   if (g_start_ok) {
     if (appQuitting()) {
       // The held soft close goes ahead next frame; it must not find us playing.
@@ -1218,8 +1457,10 @@ void pumpStarting() {
   }
   if (g_start_owner.load() == kRunning) {
     const long long now = monoMs();
-    if (now - g_start_toast_ms >= 3000) {
-      showToast(g_start_still);
+    // Home's picture says nothing while it opens, unless the user asked to
+    // quit: the soft close waits for it, and the screen shouldn't look dead.
+    if ((g_kind != Kind::Preview || appQuitting()) && now - g_start_toast_ms >= 3000) {
+      showToast(g_kind == Kind::Preview ? kPreviewClosing : g_start_still);
       g_start_toast_ms = now;
     }
     if (!g_start_slow_logged && now - g_start_t0_ms >= 45000) {
@@ -1265,10 +1506,23 @@ void request(const Request& req) {
                             g_auto_gate.load() == kGateDeciding;
   const bool qualityLookup = g_phase == Phase::Resolving && g_kind == Kind::Quality;
   const bool qualityLeaving = g_phase == Phase::Leaving;
-  if ((g_phase != Phase::Idle && !autoDeciding && !qualityLookup && !qualityLeaving) || g_pending ||
-      g_in_pump) {
+  const bool previewLookup = g_phase == Phase::Resolving && g_kind == Kind::Preview;
+  const bool previewStarting = g_phase == Phase::Starting && g_kind == Kind::Preview;
+  if ((g_phase != Phase::Idle && !autoDeciding && !qualityLookup && !qualityLeaving && !previewLookup &&
+       !previewStarting) ||
+      g_pending || g_in_pump) {
     evo_log("twitch: already starting a stream, ignoring the play request for %s", req.id);
     showToast(alreadyStarting());
+    return;
+  }
+  if (previewStarting) {
+    // Home's picture is opening on the start worker, so the controller can't
+    // be looked at now. The request waits; onStarted() stops the picture on
+    // the main thread and lets it go.
+    g_preview_cancel = true;
+    g_pending_req = req;
+    g_pending = true;
+    evo_log("twitch: play request for %s, waiting for the home preview to stand down", g_pending_req.id);
     return;
   }
   if (qualityLeaving) {
@@ -1307,6 +1561,13 @@ void request(const Request& req) {
     g_pending_req = req;
     g_pending = true;
     evo_log("twitch: play request for %s, the autoplay check stands down", g_pending_req.id);
+    return;
+  }
+  if (previewLookup) {
+    g_preview_cancel = true;
+    g_pending_req = req;
+    g_pending = true;
+    evo_log("twitch: play request for %s, the home preview stands down", g_pending_req.id);
     return;
   }
   if (qualityLookup) {
@@ -1467,7 +1728,7 @@ void pumpResolving() {
     pthread_mutex_lock(&g_box_mx);
     memcpy(note, g_box.note, sizeof note);
     pthread_mutex_unlock(&g_box_mx);
-    if (!appQuitting()) showToast(note);
+    if (!appQuitting() && g_kind != Kind::Preview) showToast(note);
   }
   if (g_resolve_done) onResolved();
 }
@@ -1490,6 +1751,120 @@ extern "C" void evo_twitch_launcher_start(void) noexcept {
     beginPlay(Kind::Auto, nullptr);
   } catch (...) {
     evo_log_error("twitch: launcher start failed");
+  }
+}
+
+extern "C" void evo_twitch_preview(const char* login) noexcept {
+  try {
+    if (!login || !login[0] || appQuitting()) return;
+    if (g_phase != Phase::Idle || g_pending || evo_twitch_launcher_busy()) return;
+    if (!onTwitchHome()) return;
+    std::string normalized;
+    try {
+      normalized = twitch::normalizeLogin(login);
+    } catch (const twitch::NotFoundError&) {
+      return;
+    }
+    if (g_home_preview && strcmp(g_playing.item, normalized.c_str()) == 0) return;
+    evo::IPlaybackController* pb = evo::Application::getInstance().getPlaybackController();
+    if (!pb) return;
+    if (g_home_preview) {
+      // Another channel is on top now: the old picture goes, whether or not
+      // the new one may start yet.
+      evo_log("twitch: home preview: %s is no longer on top", g_playing.item);
+      dropHomePreview();
+    }
+    if (!previewMayTry(normalized.c_str())) return;
+    // Something of the user's own plays (or opens): it stays. What an error
+    // or the end of a stream left is stopped once the lookup is back
+    // (onPreviewResolved()).
+    const evo::PlaybackState state = pb->getPlaybackState();
+    if (state != evo::PlaybackState::Stopped && state != evo::PlaybackState::Error &&
+        state != evo::PlaybackState::Finished)
+      return;
+    if (!selftestPassed()) return;
+    g_preview_cancel = false;
+    beginPlay(Kind::Preview, normalized.c_str());
+    if (g_phase != Phase::Resolving) previewFailed(normalized.c_str());  // the worker didn't start
+  } catch (...) {
+    evo_log_error("twitch: home preview request failed");
+  }
+}
+
+extern "C" void evo_twitch_preview_stop(void) noexcept {
+  try {
+    if (g_kind == Kind::Preview && (g_phase == Phase::Resolving || g_phase == Phase::Starting)) {
+      // Still looking it up or opening it: onPreviewResolved() or onStarted()
+      // drops it once the worker is back.
+      g_preview_cancel = true;
+      return;
+    }
+    if (evo_twitch_launcher_busy()) return;  // another start; the picture isn't up
+    if (g_home_preview) {
+      evo_log("twitch: home preview: stopping %s", g_playing.item);
+      dropHomePreview();
+    }
+  } catch (...) {
+    evo_log_error("twitch: home preview stop failed");
+  }
+}
+
+extern "C" int evo_twitch_preview_active(void) noexcept { return g_home_preview ? 1 : 0; }
+
+extern "C" int evo_twitch_preview_starting(void) noexcept {
+  return g_kind == Kind::Preview && (g_phase == Phase::Resolving || g_phase == Phase::Starting) ? 1 : 0;
+}
+
+extern "C" int evo_twitch_preview_picture(const char* login) noexcept {
+  try {
+    if (!g_home_preview || !login || !login[0] || evo_twitch_launcher_busy()) return 0;
+    if (strcmp(g_playing.item, login) != 0) {
+      std::string normalized;
+      try {
+        normalized = twitch::normalizeLogin(login);
+      } catch (...) {
+        return 0;
+      }
+      if (normalized != g_playing.item) return 0;
+    }
+    evo::IPlaybackController* pb = evo::Application::getInstance().getPlaybackController();
+    return pb && pb->isPictureReady() ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+extern "C" int evo_twitch_preview_take(const char* login) noexcept {
+  try {
+    if (!g_home_preview || !login || !login[0] || evo_twitch_launcher_busy()) return 0;
+    // Another play request is being looked up: it goes first (and the
+    // caller's own request is turned down as usual).
+    if (g_phase != Phase::Idle || g_pending) return 0;
+    // A picture in a lower quality than Settings asks for is not taken over:
+    // the caller plays the channel, which stops the picture first.
+    if (!g_preview_full) return 0;
+    std::string normalized;
+    try {
+      normalized = twitch::normalizeLogin(login);
+    } catch (const twitch::NotFoundError&) {
+      return 0;
+    }
+    if (strcmp(g_playing.item, normalized.c_str()) != 0) return 0;
+    evo::Application& app = evo::Application::getInstance();
+    evo::IPlaybackController* pb = app.getPlaybackController();
+    evo::ScreenManager* sm = app.getScreenManager();
+    if (!pb || !sm || !ownStreamPlaying(pb) || appQuitting()) return 0;
+    g_home_preview = false;
+    g_preview_full = false;
+    previewSwitches(false);
+    sm->navigateTo(evo::ScreenId::Player);
+    if (g_playing.media == Media::Live && g_playing.info.login[0])
+      evo_twitch::history_record_channel(g_playing.info.login, g_playing.info.name, g_playing.info.avatar_url);
+    evo_log("twitch: home preview: opening %s in the player", g_playing.item);
+    return 1;
+  } catch (...) {
+    evo_log_error("twitch: home preview open failed");
+    return 0;
   }
 }
 
@@ -1568,11 +1943,12 @@ extern "C" void evo_twitch_play_clip(const char* slug, const evo_twitch_video_in
 extern "C" void evo_twitch_launcher_pump(void) noexcept {
   if (g_in_pump) return;
   // Every frame, whatever the phase: the pause a quality switch carries
-  // over, a video's position for its progress, and a history save that
-  // waited for the one before it.
+  // over, a video's position for its progress, Home's picture if it died,
+  // and a history save that waited for the one before it.
   try {
     pauseTick();
     progressTick();
+    previewTick();
     evo_twitch::history_frame();
   } catch (...) {
     evo_log_error("twitch: progress tick failed");
@@ -1610,13 +1986,23 @@ extern "C" void evo_twitch_launcher_save_progress(void) noexcept {
 
 bool evoTwitchLauncherIdle() noexcept { return g_phase == Phase::Idle && !g_pending; }
 
+void evoTwitchPreviewForgetFailures() noexcept {
+  g_preview_failures = 0;
+  g_preview_wait_until_ms = 0;
+  g_preview_failed_until_ms = 0;
+}
+
 extern "C" int evo_twitch_launcher_busy(void) noexcept {
   // g_phase is main-thread state, which is why this is main thread only.
   return g_phase == Phase::Starting && g_start_owner.load() == kRunning ? 1 : 0;
 }
 
 extern "C" int evo_twitch_launcher_starting(void) noexcept {
-  if (g_pending || g_phase == Phase::Starting || g_phase == Phase::Leaving) return 1;
+  if (g_pending) return 1;
+  // Home's picture isn't one the user asked for: not a start, looked up or
+  // opening.
+  if (g_kind == Kind::Preview) return 0;
+  if (g_phase == Phase::Starting || g_phase == Phase::Leaving) return 1;
   if (g_phase != Phase::Resolving) return 0;
   // The autoplay check is not a start until it has found the switch file, and
   // a quality switch's lookup isn't one either: the old quality still plays.

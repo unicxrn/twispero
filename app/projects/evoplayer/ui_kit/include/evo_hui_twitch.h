@@ -179,7 +179,17 @@ typedef struct {
     int                    recent_count;
     evo_hui_twitch_channel_t recent[EVO_HUI_TWITCH_HOME_RECENT];  /* viewers >= 0 while live */
     int                    recent_col;        /* cursor in Recently watched */
+    int                    live_picture;      /* 1: the hero art is a live picture; leave that rect clear */
+    const char*            streams_language;  /* Popular now's language ("German") after its title;
+                                                 "" or NULL for every language */
 } evo_hui_twitch_home_params_t;
+
+/* The hero's art on the 1920x1080 page, where Home's live picture goes
+ * (Application sets the video rect from these). */
+#define EVO_HUI_TWITCH_HERO_X 1024
+#define EVO_HUI_TWITCH_HERO_Y 64
+#define EVO_HUI_TWITCH_HERO_W 800
+#define EVO_HUI_TWITCH_HERO_H 450
 
 void evo_hui_update_twitch_home(const evo_hui_twitch_home_params_t* params);
 int  evo_hui_render_twitch_home(int width, int height);
@@ -199,6 +209,8 @@ typedef struct {
     evo_hui_twitch_category_t categories[EVO_HUI_TWITCH_BROWSE_CATEGORIES];
     int                    cursor;            /* the card the cursor is on, kept while the rail is open */
     int                    rail_focused;      /* 1 while the rail has the cursor: no ring, the page stays */
+    const char*            language;          /* "German streams" after the line under the title when
+                                                 a stream language is picked; "" or NULL for every one */
 } evo_hui_twitch_browse_params_t;
 
 void evo_hui_update_twitch_browse(const evo_hui_twitch_browse_params_t* params);
@@ -237,6 +249,8 @@ typedef struct {
     evo_hui_twitch_video_t clips[EVO_HUI_TWITCH_CATEGORY_CLIPS];  /* detail: the channel */
     int                    clip_cursor;       /* in the clips, kept while the cursor is elsewhere */
     const char*            starting_id;       /* a clip we asked for is starting, or NULL */
+    const char*            language;          /* the live list's: "German streams" after the viewers,
+                                                 and L1/R1 offered; "" or NULL for every language */
 } evo_hui_twitch_category_params_t;
 
 void evo_hui_update_twitch_category(const evo_hui_twitch_category_params_t* params);
@@ -435,6 +449,7 @@ typedef struct {
                                                            otherwise */
     const char*                           reply_login;  /* shown instead when the fonts can't draw it */
     int                                   mention;      /* 1: it mentions the logged-in user: on a tint */
+    int                                   selected;     /* 1: the line L1 will answer, drawn with a bar */
 } evo_hui_twitch_chat_line_t;
 
 #define EVO_HUI_TWITCH_CHAT_SIDE    0
@@ -463,6 +478,8 @@ typedef struct {
     const evo_hui_twitch_chat_line_t*  lines;      /* oldest first; the newest that fit are drawn */
     int                                line_count;
     int                                text_size;  /* EVO_HUI_TWITCH_CHAT_TEXT_* */
+    int                                paused;     /* 1: a line is picked to reply to and chat holds
+                                                      still; the side panel's header says so */
 } evo_hui_twitch_chat_params_t;
 
 void evo_hui_twitch_chat_update(const evo_hui_twitch_chat_params_t* p);

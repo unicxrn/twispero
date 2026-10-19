@@ -104,7 +104,9 @@ MEDIA_SRCS := \
     media/src/evo_packet_queue.c \
     media/src/evo_audio_resample.c \
     media/src/evo_audio_out.c \
+    media/src/evo_av_clock.c \
     media/src/evo_hw.c \
+    media/src/evo_sysui.c \
     media/src/evo_perf_monitor.c \
     media/src/evo_demux.c \
     media/src/evo_vdec_ffmpeg.c \
@@ -255,7 +257,13 @@ twitch/obj/mod_%.o: twitch/src/%.cpp
 core/src/Application.o: CXXFLAGS += -Itwitch/include
 core/src/screens/TwitchHomeScreen.o: CXXFLAGS += -Itwitch/include
 core/src/screens/TwitchBrowseScreen.o: CXXFLAGS += -Itwitch/include
+# Browse saves the language filter through evo_twitch_settings.h, whose
+# AppSettings is the core's (twitch/settings.hpp). The language list itself
+# stays in the module, so this screen does not include the JSON library.
+core/src/screens/TwitchBrowseScreen.o: CXXFLAGS += -I$(TWITCH_CORE_DIR)/include
 core/src/screens/TwitchCategoryScreen.o: CXXFLAGS += -Itwitch/include
+# A category's live list is in that language too, and it steps it with L1/R1.
+core/src/screens/TwitchCategoryScreen.o: CXXFLAGS += -I$(TWITCH_CORE_DIR)/include
 core/src/screens/TwitchSearchScreen.o: CXXFLAGS += -Itwitch/include
 core/src/screens/TwitchChannelScreen.o: CXXFLAGS += -Itwitch/include
 # The quality picker lists the launcher's qualities and asks it to switch.

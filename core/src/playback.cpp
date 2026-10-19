@@ -77,6 +77,9 @@ AccessToken fetchStreamToken(GqlClient& gql, const std::string& login,
 std::string usherStreamUrl(const std::string& login, const AccessToken& token, unsigned nonce) {
   return std::string(kUsherStreamBase) + percentEncode(normalizeLogin(login)) + ".m3u8?" +
          buildQuery({
+             // Without it usher leaves out the audio only rendition, and the
+             // quality menu (and the "audio_only" setting) has nothing to pick.
+             {"allow_audio_only", "true"},
              {"allow_source", "true"},
              {"p", std::to_string(nonce)},
              {"player_backend", "mediaplayer"},

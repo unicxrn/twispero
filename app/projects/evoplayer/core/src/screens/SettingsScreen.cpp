@@ -36,6 +36,7 @@ enum class SettingKey : int {
     ChatTextSize,
     ThirdPartyEmotes,
     LiveNotifications,
+    HomePreview,
     /* Controls & sound */
     Keyboard,
     NavigationSounds,
@@ -70,6 +71,7 @@ struct SettingDef {
 const SettingKey kTwitchKeys[] = {
     SettingKey::TwitchAccount,    SettingKey::DefaultQuality,    SettingKey::Chat,
     SettingKey::ChatTextSize,     SettingKey::ThirdPartyEmotes,  SettingKey::LiveNotifications,
+    SettingKey::HomePreview,
 };
 const SettingKey kControlsKeys[] = {
     SettingKey::Keyboard, SettingKey::NavigationSounds, SettingKey::ControllerLight,
@@ -241,6 +243,12 @@ SettingDef makeDef(SettingKey key, ISettingsService* settings) {
                       "../icons/icon_bell.png", evo_twitch::settings().liveNotifications);
         break;
 
+    /* Read by Home every frame: off, its hero shows a still picture. */
+    case SettingKey::HomePreview:
+        d = toggleDef(key, "Live preview on Home", "The top stream plays without sound at the top of Home",
+                      "../icons/icon_tv.png", evo_twitch::settings().homePreview);
+        break;
+
     case SettingKey::Keyboard:
         d = valueDef(key, "Keyboard", "For search and chat messages", "../icons/icon_keyboard.png",
                      kKeyboardLabels, 2, settings->getKeyboardType() == EVO_KEYBOARD_TYPE_VIRTUAL ? 1 : 0);
@@ -369,6 +377,9 @@ void toggleSetting(SettingKey key) {
         break;
     case SettingKey::LiveNotifications:
         evo_twitch::set_live_notifications(!evo_twitch::settings().liveNotifications);
+        break;
+    case SettingKey::HomePreview:
+        evo_twitch::set_home_preview(!evo_twitch::settings().homePreview);
         break;
     default: return;
     }

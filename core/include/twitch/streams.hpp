@@ -26,7 +26,9 @@ std::vector<StreamInfo> parseTopStreams(const nlohmann::json& data);
 
 // Live streams in the order Twitch returns them (most viewers first). Returns at
 // most `first` streams; asks Twitch for a few extra because it currently returns
-// one fewer than requested. Twitch caps a request at 30.
-std::vector<StreamInfo> topStreams(GqlClient& gql, int first);
+// one fewer than requested. Twitch caps a request at 30. `language` is a
+// broadcaster language from browse.hpp ("" for every language); anything else
+// is ignored and the list is unfiltered.
+std::vector<StreamInfo> topStreams(GqlClient& gql, int first, const std::string& language = {});
 
 }  // namespace twitch

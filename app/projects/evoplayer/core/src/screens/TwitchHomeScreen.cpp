@@ -2,6 +2,7 @@
 #include "evo/screens/TwitchCategoryScreen.hpp"
 #include "evo/screens/TwitchChannelScreen.hpp"
 #include "evo/screens/TwitchScreenData.hpp"
+#include "evo_twitch_settings.h"
 #include "evo/Application.hpp"
 #include "evo_rmlui_bridge.h"
 
@@ -61,8 +62,14 @@ TwitchHomeScreen::TwitchHomeScreen()
     static_assert(Recent == EVO_HUI_TWITCH_ROW_RECENT, "Row must match EVO_HUI_TWITCH_ROW_*");
 }
 
+void TwitchHomeScreen::onExit() {
+    evo_twitch_preview_stop();
+    StatefulScreen::onExit();
+}
+
 void TwitchHomeScreen::onEnter() {
     StatefulScreen::onEnter();
+    m_enteredMs = m_lastInputMs = evo_twitch::data_now_ms();
     m_streamsToast.sync(evo_twitch::home_streams());
     m_categoriesToast.sync(evo_twitch::home_categories());
     m_followedToast.sync(evo_twitch::followed_live());
@@ -73,6 +80,27 @@ void TwitchHomeScreen::onEnter() {
 void TwitchHomeScreen::update(double deltaMs) {
     StatefulScreen::update(deltaMs);
     followLogin();
+    syncPreview();
+}
+
+void TwitchHomeScreen::syncPreview() {
+    /* None with Settings' switch off, with nothing live, or once the pad has
+     * been left alone for a while: a page left up doesn't stream on (and
+     * keep the GPU busy) for hours. Any press brings it back. A quick pass
+     * through Home starts nothing. */
+    const auto& streams = evo_twitch::home_streams().value;
+    const unsigned long long now = evo_twitch::data_now_ms();
+    /* The rail takes the pad before this screen sees it: open, it counts as
+     * being used. */
+    if (auto sm = Application::getInstance().getScreenManager())
+        if (sm->isRailFocused()) m_lastInputMs = now;
+    if (streams.empty() || !evo_twitch::settings().homePreview || twitch_screen::fallbackActive() ||
+        now - m_lastInputMs >= kPreviewIdleMs) {
+        evo_twitch_preview_stop();
+        return;
+    }
+    if (now - m_enteredMs < kPreviewSettleMs) return;
+    evo_twitch_preview(streams[0].login.c_str());
 }
 
 void TwitchHomeScreen::followLogin() {
@@ -242,6 +270,10 @@ void TwitchHomeScreen::activate() {
         TwitchCategoryScreen::show(c.name, c.viewers, c.boxArtUrl);
         return;
     }
+    if (m_row == Hero && evo_twitch_preview_take(login.c_str())) {
+        evo_feedback(EVO_FB_CONFIRM);
+        return;
+    }
     if (twitch_screen::play(login, m_startingLogin)) m_startingLogin = login;
 }
 
@@ -336,6 +368,7 @@ void TwitchHomeScreen::fillRecent(evo_hui_twitch_home_params_t& p) {
 bool TwitchHomeScreen::handleInput(uint32_t pressed, uint32_t held, uint32_t released) {
     (void)held;
     (void)released;
+    m_lastInputMs = evo_twitch::data_now_ms();
     if (twitch_screen::fallbackActive()) return twitch_screen::fallbackInput(pressed);
 
     if (pressed & PadButtons::Up) {
@@ -479,6 +512,11 @@ void TwitchHomeScreen::render(uint32_t* framebuffer, int width, int height) {
     p.recent_col = m_recentCol;
     p.starting_login = m_startingLogin.empty() ? nullptr : m_startingLogin.c_str();
     p.starting_id = m_startingId.empty() ? nullptr : m_startingId.c_str();
+    p.live_picture = p.stream_count > 0 ? evo_twitch_preview_picture(streams.value[0].login.c_str()) : 0;
+    /* Popular now is in the stream language picked on Browse. */
+    const std::string& language = evo_twitch::settings().browseLanguage;
+    m_streamsLanguage = language.empty() ? std::string() : evo_twitch::browse_language_label(language);
+    p.streams_language = m_streamsLanguage.c_str();
 
 #if defined(EVO_AGC_DEVICE)
     evo_hui_update_twitch_home(&p);

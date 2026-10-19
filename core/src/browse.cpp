@@ -17,9 +17,12 @@ const char* const kTopCategoriesQuery =
     "query TopCategories($first: Int!) { games(first: $first) { edges { node { "
     "id name displayName viewersCount boxArtURL(width: 285, height: 380) } } } }";
 
-const char* const kCategoryStreamsQuery =
+// In two halves, split where a language filter goes (categoryStreams).
+const char* const kCategoryStreamsHead =
     "query CategoryStreams($name: String!, $first: Int!) { game(name: $name) { "
-    "name streams(first: $first) { edges { node { id title viewersCount "
+    "name streams(first: $first";
+const char* const kCategoryStreamsTail =
+    ") { edges { node { id title viewersCount "
     "previewImageURL(width: 440, height: 248) broadcaster { login displayName } } } } } }";
 
 const char* const kSearchCategoriesQuery =
@@ -187,13 +190,15 @@ std::vector<StreamInfo> parseCategoryStreams(const nlohmann::json& data, const s
 }
 
 // Same quirk as topStreams: streams(first: n) returns n-1 edges.
-std::vector<StreamInfo> categoryStreams(GqlClient& gql, const std::string& categoryName, int first) {
+std::vector<StreamInfo> categoryStreams(GqlClient& gql, const std::string& categoryName, int first,
+                                        const std::string& language) {
   const int want = clampFirst(first);
   if (want <= 0) return {};
   const int ask = std::min(want, 25) + 5;
+  // A language goes in as an enum, never as a variable (see topStreams).
+  const std::string query = kCategoryStreamsHead + browseLanguageOption(language) + kCategoryStreamsTail;
   std::vector<StreamInfo> streams = parseCategoryStreams(
-      gql.query(kCategoryStreamsQuery, nlohmann::json{{"name", categoryName}, {"first", ask}}),
-      categoryName);
+      gql.query(query, nlohmann::json{{"name", categoryName}, {"first", ask}}), categoryName);
   if (streams.size() > static_cast<size_t>(want)) streams.resize(static_cast<size_t>(want));
   return streams;
 }
@@ -351,6 +356,40 @@ std::string startsInText(const std::string& startAt, long long nowSeconds) {
   if (hours < 24) return "In " + std::to_string(hours) + " h";
   const long long days = (in + 43200) / 86400;
   return "In " + std::to_string(days) + (days == 1 ? " day" : " days");
+}
+
+bool isBrowseLanguage(const std::string& code) noexcept {
+  if (code.empty()) return false;
+  for (int i = 1; i < kBrowseLanguageCount; ++i)
+    if (code == kBrowseLanguages[i]) return true;
+  return false;
+}
+
+std::string browseLanguageOption(const std::string& code) {
+  if (!isBrowseLanguage(code)) return "";
+  return ", options: {broadcasterLanguages: [" + code + "]}";
+}
+
+static int browseLanguageIndex(const std::string& code) noexcept {
+  for (int i = 0; i < kBrowseLanguageCount; ++i)
+    if (code == kBrowseLanguages[i]) return i;
+  return 0;
+}
+
+std::string nextBrowseLanguage(const std::string& code) {
+  const int i = browseLanguageIndex(code);
+  return kBrowseLanguages[(i + 1) % kBrowseLanguageCount];
+}
+
+std::string prevBrowseLanguage(const std::string& code) {
+  const int i = browseLanguageIndex(code);
+  return kBrowseLanguages[(i + kBrowseLanguageCount - 1) % kBrowseLanguageCount];
+}
+
+std::string browseLanguageLabel(const std::string& code) {
+  if (!isBrowseLanguage(code)) return "All languages";
+  const std::string name = languageName(code);
+  return name.empty() ? code : name;
 }
 
 std::string languageName(const std::string& code) {

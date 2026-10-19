@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "twitch/browse.hpp"
+
 namespace twitch {
 
 namespace {
@@ -68,6 +70,11 @@ AppSettings parseSettings(const std::string& json) noexcept {
     }
     readBool(j, "third_party_emotes", s.thirdPartyEmotes);
     readBool(j, "live_notifications", s.liveNotifications);
+    readBool(j, "home_preview", s.homePreview);
+    if (const auto lang = j.find("browse_language"); lang != j.end() && lang->is_string()) {
+      const std::string v = lang->get<std::string>();
+      if (v.empty() || isBrowseLanguage(v)) s.browseLanguage = v;
+    }
   } catch (...) {
     return AppSettings{};
   }
@@ -86,6 +93,8 @@ std::string serializeSettings(const AppSettings& s) {
   j["chat_text_size"] = sizeName(s.chatTextSize);
   j["third_party_emotes"] = s.thirdPartyEmotes;
   j["live_notifications"] = s.liveNotifications;
+  j["home_preview"] = s.homePreview;
+  j["browse_language"] = isBrowseLanguage(s.browseLanguage) ? s.browseLanguage : "";
   return j.dump() + "\n";
 }
 

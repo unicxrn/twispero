@@ -5,7 +5,9 @@
 #include "evo/fsm/StateMachine.hpp"
 #include "evo_hui_twitch.h"
 #include "evo_rmlui_bridge.h"
+#include "twitch/chat_log.hpp"
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -77,13 +79,39 @@ private:
     /* Writes an R1 change that is waiting (m_chatSavePending). */
     void flushChatSave();
     /* Triangle on a Twitch stream: the keyboard for a chat message, or a
-     * toast saying why not. */
-    void openChatKeyboard(IPlaybackController* playback);
+     * toast saying why not. replyId, when set, sends it as a reply to that
+     * line and titles the keyboard for replyName. */
+    void openChatKeyboard(IPlaybackController* playback, const std::string& replyId = {},
+                          const std::string& replyName = {});
+    /* Up/Down walk the chat lines that can be replied to (dir -1 is older);
+     * the first Up pauses chat, Down past where it paused lets it go on. */
+    void moveChatReply(int dir);
+    /* L1: with nothing picked, pauses chat on its newest line; with a line
+     * picked, the keyboard to reply to it. */
+    void replyToChat(IPlaybackController* playback);
+    /* Keeps a copy of the lines on screen now (m_pausedLines) and says so. */
+    void pauseChat(const std::deque<twitch::ChatLine>& live);
+    /* Pauses chat and picks its newest line that can be replied to. False,
+     * and chat runs on, when there is none. */
+    bool startChatPick();
+    /* Marks `line` (in m_pausedLines) as the one to reply to. */
+    void pickChatLine(const twitch::ChatLine& line);
+    /* No line picked: chat goes on from its newest line. */
+    void resumeChat();
+    /* Chat moved to another channel: it goes on. */
+    void checkReplyChannel();
+    /* Every frame: chat goes on once the channel changed, or nothing was
+     * pressed for kChatReplyIdleMs. */
+    void tickChatReply();
+    /* One past the last line to draw of `lines`: all of them, or while a
+     * line is picked, up to kChatReplyBelow under it. */
+    std::size_t chatWindowEnd(const std::deque<twitch::ChatLine>& lines) const;
     /* The keyboard's confirm: hands the message to the chat service.
      * evo_keyboard calls it on the main thread. */
     static void OnChatSubmitted(const char* text, void* userdata) noexcept;
-    /* Brings m_chatUrls in line with the newest lines of the chat log. */
-    void syncChatUrls(bool badgesKnown);
+    /* Brings m_chatUrls in line with `lines` before `end` (the log's, or the
+     * paused copy). */
+    void syncChatUrls(bool badgesKnown, const std::deque<twitch::ChatLine>& lines, std::size_t end);
     /* Square on a live Twitch stream: asks the clip maker for a clip
      * (evo_twitch_clip.h) and toasts "Making a clip...", or why not. */
     void makeClip(IPlaybackController* playback);
@@ -121,6 +149,7 @@ private:
     unsigned long long m_chatRevision = 0;
     bool m_chatBadgesKnown = false;
     bool m_chatSynced = false;
+    unsigned long long m_chatEndSerial = 0;  /* the last line synced (chatWindowEnd) */
     std::vector<evo_hui_twitch_chat_line_t> m_chatLines;
     std::vector<evo_hui_twitch_chat_segment_t> m_chatSegments;
     std::vector<evo_hui_twitch_image_t> m_chatBadgePics;
@@ -132,6 +161,11 @@ private:
     bool m_chatSavePending = false;  /* R1 changed the mode; the file isn't written yet */
     uint64_t m_chatSaveDueMs = 0;    /* written then, unless R1 comes again */
     std::string m_chatSendChannel;   /* the login the open keyboard writes to */
+    std::string m_chatReplyId;       /* set while the open keyboard is a reply */
+    std::string m_replyChannel;      /* chat channel the highlight belongs to */
+    unsigned long long m_replySerial = 0; /* the line picked to reply to, 0 for none: chat runs */
+    std::deque<twitch::ChatLine> m_pausedLines; /* the lines on screen when chat paused */
+    uint64_t m_replyUsedMs = 0;           /* the last Up, Down or L1 on it */
     bool m_keyboardOverVideo = false; /* EVO's own keyboard was up last frame drawn */
 
     /* The card for a clip just made (Square): its page as a QR, shown for

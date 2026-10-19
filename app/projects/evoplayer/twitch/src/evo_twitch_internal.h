@@ -25,6 +25,10 @@ twitch::HttpClient& evoTwitchHttpVerified();
 // out). Main thread only. For launcher_host_test.cpp.
 bool evoTwitchLauncherIdle() noexcept;
 
+// Forgets Home's picture's failures, so the next one may start at once
+// instead of after its wait. For launcher_host_test.cpp only.
+void evoTwitchPreviewForgetFailures() noexcept;
+
 // What evo_twitch_selftest() found: 1 passed, 0 failed, -1 not run yet.
 int evoTwitchSelftestState() noexcept;
 

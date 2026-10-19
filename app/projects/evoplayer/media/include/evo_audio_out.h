@@ -53,6 +53,7 @@ extern "C" {
 
 /*
  * Maximum audio lead over video presentation position, in seconds.
+ * (Both sides are PTS relative to first_video_pts_seconds.)
  *
  * One audio block is 2048 samples @ 48 kHz (~42.67 ms). 45 ms allows the
  * audio driver to maintain double-buffered hardware output (~85 ms) while
@@ -74,10 +75,31 @@ extern volatile int       audio_queue_write;
 extern volatile int       audio_queue_count;
 extern volatile long long audio_samples_played;
 extern volatile long long audio_samples_decoded;
+/*
+ * The audio master clock: the PTS of the block last handed to the port,
+ * relative to first_video_pts_seconds (the first block's own PTS when there is
+ * no picture), so first_video_pts_seconds + audio_clock_seconds is the PTS of
+ * the audio playing. Steps once per block; silence on an underrun leaves it
+ * where it is. evo_av_clock.h has the details.
+ */
 extern volatile double    audio_clock_seconds;
 extern volatile double    audio_pts_seconds;
 extern double             first_audio_pts_seconds;
 extern int                detected_audio_rate;
+/* Decoded blocks dropped on a full queue since the stream opened. */
+extern volatile unsigned  audio_blocks_dropped;
+
+/* Puts the clock's block-PTS bookkeeping back to the start: on open and stop
+ * (new_stream = 1, which also zeroes audio_blocks_dropped) and after a seek. */
+void evo_audio_out_reset_clock(int new_stream);
+/* 1: the output thread still advances the media clock, but plays silence.
+ * Home's live picture uses this so the stream stays in sync without sound. */
+void evo_audio_set_silent(int on);
+
+#ifdef EVO_USB_REMOTE
+/* Dev remote `avdrop <ms>`: throw away that much decoded audio, once. */
+void evo_audio_out_avdrop(int ms);
+#endif
 
 /*
  * Seek discard gate, in stream seconds, or -1.0 when no seek is settling.

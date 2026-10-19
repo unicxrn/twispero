@@ -83,6 +83,7 @@ extern pp_playback g_pp_pb;
 
 long long now_ms(void);
 #include "evo_toast.h"
+#include "evo_playback.h"   /* evo_pb_quiet() */
 
 /* ---------------------------------------------------------------------------
  * Demux state (exported via evo_demux.h).
@@ -429,6 +430,8 @@ packet_queue_clear(
 
         first_audio_pts_seconds = -1.0;
         first_video_pts_seconds = -1.0;
+        /* The clock starts again from the first block at the target. */
+        evo_audio_out_reset_clock(0);
 
         video_decode_done = 0;
         dbg_read_fail = 0;
@@ -822,7 +825,7 @@ static void demux_recover(int read_result)
     demux_recovering = 1;
     /* Through the parallel reader the player has already said so
      * (PlayerScreen watches the reader); one toast per outage, not two. */
-    if (demux_recover_tries == 1 && !pio_open())
+    if (demux_recover_tries == 1 && !pio_open() && !evo_pb_quiet())
         toast_error("Connection lost", "Trying again\xE2\x80\xA6");
     const AVStream *st = play_fmt->streams[video_stream_index];
     char err[64];
@@ -857,7 +860,7 @@ static int demux_already_have(const AVPacket *pkt)
                      demux_last_vdts * av_q2d(play_fmt->streams[video_stream_index]->time_base));
         demux_catching_up &= ~1;
         demux_recovering = 0;
-        if (!pio_open())
+        if (!pio_open() && !evo_pb_quiet())
             toast_success("Back online", "The stream is playing again");
         return 0;
     }
@@ -931,7 +934,8 @@ void *demux_thread_func(void *arg) {
                 demux_gave_up_told = 1;
                 demux_recovering = 0;
                 evo_boot_log("demux: gave up after %d tries - stream stopped", demux_recover_tries);
-                toast_error("The connection didn't come back", "Playback stopped");
+                if (!evo_pb_quiet())
+                    toast_error("The connection didn't come back", "Playback stopped");
             }
             /*
              * Keep the demux thread alive so seeking backward from EOF

@@ -7,6 +7,7 @@
 #include "evo_vdec.h"
 #include "evo_perf_monitor.h"
 #include "evo_toast.h"
+#include "evo_feedback.h"
 #include "evo_boot_log.h"
 #include "evo_agc_runtime.h"
 #include "evo_hw.h"
@@ -92,6 +93,14 @@ constexpr int kChatBadgeH = 36;
 
 /* An R1 press is written to the settings file once the presses stop. */
 constexpr uint64_t kChatSaveDelayMs = 1500;
+
+/* Picking a line to reply to pauses chat: the lines on screen then are
+ * kept (m_pausedLines), so a busy chat can't push the picked one out of the
+ * log. The picked line keeps this many newer lines under it on screen, so it
+ * never sits hidden at the cut top; and chat goes on by itself after
+ * kChatReplyIdleMs with no Up, Down or L1 (not while the keyboard is up). */
+constexpr std::size_t kChatReplyBelow = 3;
+constexpr uint64_t kChatReplyIdleMs = 30000;
 
 /* How often the player asks for the channel playing again, for the OSD's
  * viewer count (and a title or category that changed meanwhile). */
@@ -282,6 +291,8 @@ void PlayerScreen::onExit() {
     /* A picker, the exit dialog or another screen: an R1 change waiting to
      * be written goes now. */
     flushChatSave();
+    /* Chat goes on: a picked line doesn't wait behind another screen. */
+    resumeChat();
     /* The clip card stays with the stream it was made on: it doesn't come
      * back with the player. */
     m_clipCardUntilMs = 0;
@@ -331,6 +342,7 @@ bool PlayerScreen::handleInput(uint32_t pressed, uint32_t held, uint32_t release
     if ((pressed & PadButtons::R1) && twitchPlaying(playback)) {
         const twitch::ChatMode mode = twitch::nextChatMode(evo_twitch::settings().chatMode);
         evo_twitch::set_chat_mode(mode);
+        resumeChat();  /* a line picked in the old layout */
         m_chatSavePending = true;
         m_chatSaveDueMs = NowMs() + kChatSaveDelayMs;
         toast("Chat", chatModeName(mode));
@@ -339,10 +351,28 @@ bool PlayerScreen::handleInput(uint32_t pressed, uint32_t held, uint32_t release
 
     /* Triangle writes to the chat of a Twitch stream, whose aspect stays the
      * Settings default. Before the controls' timer too: the OSD isn't needed
-     * for typing. Any other source keeps the aspect below. */
+     * for typing. Any other source keeps the aspect below. A reply highlight
+     * stays; Triangle itself is always a new message. */
     if ((pressed & PadButtons::Triangle) && twitchPlaying(playback)) {
         openChatKeyboard(playback);
         return true;
+    }
+
+    /* L1 pauses chat on its newest line, Up/Down pick another, and L1 again
+     * opens the keyboard to reply to the picked one. Chat has to be on
+     * screen; with it off, L1 stays the swallowed live key below. Up and Down
+     * bring the controls up too, as they always have (the hint there says
+     * what L1 does). */
+    if (twitchPlaying(playback) && evo_twitch::settings().chatMode != twitch::ChatMode::Off) {
+        if (pressed & (PadButtons::Up | PadButtons::Down)) {
+            m_controlsLastUsedMs = NowMs();
+            moveChatReply((pressed & PadButtons::Up) ? -1 : 1);
+            return true;
+        }
+        if (pressed & PadButtons::L1) {
+            replyToChat(playback);
+            return true;
+        }
     }
 
     if (pressed) {
@@ -436,7 +466,134 @@ bool PlayerScreen::handleInput(uint32_t pressed, uint32_t held, uint32_t release
     return false;
 }
 
-void PlayerScreen::openChatKeyboard(IPlaybackController* playback) {
+namespace {
+
+/* A viewer's line, with Twitch's id: status and notices have nothing to answer. */
+bool chatReplyable(const twitch::ChatLine& line) {
+    return !line.id.empty() && !line.status && !line.notice;
+}
+
+/* Where the line with that serial is in the log, or -1 once it has left. */
+long chatIndexOf(const std::deque<twitch::ChatLine>& lines, unsigned long long serial) {
+    for (std::size_t i = lines.size(); i-- > 0;) {
+        if (lines[i].serial == serial) return static_cast<long>(i);
+        if (lines[i].serial < serial) break;  /* oldest first, rising serials */
+    }
+    return -1;
+}
+
+/* The newest line that can be replied to at or before `from`, or -1. */
+long newestReplyable(const std::deque<twitch::ChatLine>& lines, long from) {
+    for (long i = from; i >= 0; --i)
+        if (chatReplyable(lines[static_cast<std::size_t>(i)])) return i;
+    return -1;
+}
+
+} // namespace
+
+void PlayerScreen::pauseChat(const std::deque<twitch::ChatLine>& live) {
+    const std::size_t n = std::min(live.size(), kChatLines);
+    m_pausedLines.assign(live.end() - static_cast<std::ptrdiff_t>(n), live.end());
+    toast("Chat paused", "Up and Down pick a message, L1 replies to it");
+}
+
+void PlayerScreen::pickChatLine(const twitch::ChatLine& line) {
+    m_replySerial = line.serial;
+    m_replyUsedMs = NowMs();
+    evo_feedback(EVO_FB_MOVE);
+}
+
+void PlayerScreen::resumeChat() {
+    m_replySerial = 0;
+    m_pausedLines.clear();
+}
+
+bool PlayerScreen::startChatPick() {
+    const evo_twitch::ChatView& view = evo_twitch::chat_view();
+    if (!view.log) return false;
+    pauseChat(view.log->lines());
+    const long i = newestReplyable(m_pausedLines, static_cast<long>(m_pausedLines.size()) - 1);
+    if (i < 0) {
+        resumeChat();
+        return false;
+    }
+    pickChatLine(m_pausedLines[static_cast<std::size_t>(i)]);
+    return true;
+}
+
+/* Chat's channel changed (another stream) since a line was picked: chat
+ * goes on with the new one. */
+void PlayerScreen::checkReplyChannel() {
+    const evo_twitch::ChatView& view = evo_twitch::chat_view();
+    if (!view.log || view.channel != m_replyChannel) {
+        m_replyChannel = view.log ? view.channel : std::string();
+        resumeChat();
+    }
+}
+
+void PlayerScreen::moveChatReply(int dir) {
+    checkReplyChannel();
+    if (!m_replySerial) {
+        /* Up pauses chat on its newest message; Down has nothing to do. */
+        if (dir > 0 || !startChatPick()) evo_feedback(EVO_FB_BOUNDARY);
+        return;
+    }
+    const std::deque<twitch::ChatLine>& lines = m_pausedLines;
+    const long current = chatIndexOf(lines, m_replySerial);
+    if (dir < 0) {
+        const long i = newestReplyable(lines, current - 1);
+        if (i < 0) {
+            evo_feedback(EVO_FB_BOUNDARY);
+            return;
+        }
+        pickChatLine(lines[static_cast<std::size_t>(i)]);
+        return;
+    }
+    for (long i = current + 1; i < static_cast<long>(lines.size()); ++i) {
+        if (chatReplyable(lines[static_cast<std::size_t>(i)])) {
+            pickChatLine(lines[static_cast<std::size_t>(i)]);
+            return;
+        }
+    }
+    /* Past the newest line it paused on: chat goes on. */
+    resumeChat();
+    evo_feedback(EVO_FB_MOVE);
+}
+
+void PlayerScreen::replyToChat(IPlaybackController* playback) {
+    checkReplyChannel();
+    /* Nothing picked yet: pause on the newest line first, so a fast chat
+     * can't swap who the reply goes to between the press and the keyboard. */
+    if (!m_replySerial) {
+        if (!startChatPick()) toast("Nothing to reply to", nullptr);
+        return;
+    }
+    const long i = chatIndexOf(m_pausedLines, m_replySerial);
+    if (i < 0) {  /* can't happen: the paused copy holds it */
+        resumeChat();
+        return;
+    }
+    const twitch::ChatLine& chosen = m_pausedLines[static_cast<std::size_t>(i)];
+    m_replyUsedMs = NowMs();
+    const std::string& who = !chosen.name.empty() ? chosen.name : chosen.user;
+    openChatKeyboard(playback, chosen.id, who);
+}
+
+void PlayerScreen::tickChatReply() {
+    if (!m_replySerial) return;
+    checkReplyChannel();
+    if (m_replySerial && !evo_keyboard_is_open() && NowMs() - m_replyUsedMs >= kChatReplyIdleMs) resumeChat();
+}
+
+std::size_t PlayerScreen::chatWindowEnd(const std::deque<twitch::ChatLine>& lines) const {
+    if (!m_replySerial) return lines.size();
+    const long picked = chatIndexOf(lines, m_replySerial);
+    if (picked < 0) return lines.size();
+    return std::min(lines.size(), static_cast<std::size_t>(picked) + 1 + kChatReplyBelow);
+}
+
+void PlayerScreen::openChatKeyboard(IPlaybackController* playback, const std::string& replyId,
+                                    const std::string& replyName) {
     const evo_twitch::AuthView& auth = evo_twitch::auth_view();
     if (auth.state == evo_twitch::AuthState::Unknown) {
         /* auth.json isn't read yet: a moment after start, or until the
@@ -451,9 +608,14 @@ void PlayerScreen::openChatKeyboard(IPlaybackController* playback) {
     const PlaybackSource* src = playback->currentSource();
     if (!src) return;
     m_chatSendChannel = src->item_id;
-    char title[128];
-    std::snprintf(title, sizeof title, "Send a message to %s",
-                  channelName(src->title, src->item_id).c_str());
+    m_chatReplyId = replyId;
+    char title[160];
+    if (!replyId.empty())
+        std::snprintf(title, sizeof title, "Reply to %s",
+                      replyName.empty() ? "chat" : replyName.c_str());
+    else
+        std::snprintf(title, sizeof title, "Send a message to %s",
+                      channelName(src->title, src->item_id).c_str());
     /* A message to this channel that didn't go out in the last 2 minutes
      * comes back for another try instead of being typed again. Peeked, not
      * taken: cancelling the keyboard must not lose it. */
@@ -473,7 +635,10 @@ void PlayerScreen::OnChatSubmitted(const char* text, void* userdata) noexcept {
         evo_twitch::chat_take_draft(self->m_chatSendChannel, &old);
         /* Queued for the send worker; a failure comes back later as a
          * notice, which Application toasts wherever the user is by then. */
-        const char* refused = evo_twitch::chat_send(self->m_chatSendChannel, text);
+        const char* refused = evo_twitch::chat_send(self->m_chatSendChannel, text, self->m_chatReplyId);
+        /* A message sent, a reply or not: chat goes on, so it shows up. */
+        self->resumeChat();
+        self->m_chatReplyId.clear();
         if (refused) toast_error("Chat", refused);  /* "Message not sent: ..." */
     } catch (...) {
         toast_error("Chat", "Message not sent: something went wrong");
@@ -566,6 +731,7 @@ void PlayerScreen::update(double deltaMs) {
     m_playerFsm.update(deltaMs);
 
     if (m_chatSavePending && NowMs() >= m_chatSaveDueMs) flushChatSave();
+    tickChatReply();
 
     /* A clip made with Square: its card, or why there is none. The card goes
      * by itself after its time. */
@@ -974,11 +1140,10 @@ void PlayerScreen::render(uint32_t* framebuffer, int width, int height) {
     }
 }
 
-void PlayerScreen::syncChatUrls(bool badgesKnown) {
+void PlayerScreen::syncChatUrls(bool badgesKnown, const std::deque<twitch::ChatLine>& lines, std::size_t end) {
     const evo_twitch::ChatView& view = evo_twitch::chat_view();
-    const std::deque<twitch::ChatLine>& lines = view.log->lines();
-    const std::size_t n = std::min(lines.size(), kChatLines);
-    const std::size_t first = lines.size() - n;
+    const std::size_t n = std::min(end, kChatLines);
+    const std::size_t first = end - n;
 
     /* Both run oldest first with rising serials: keep the entries of the
      * lines still drawn, build the new ones, and let the rest go (with the
@@ -1042,23 +1207,30 @@ void PlayerScreen::renderChat(int kitMode, const std::string& title, const std::
             m_chatSynced = false;
         }
 
+        /* The log's lines up to the newest, or while a line is picked to
+         * reply to, the paused copy up to a few under it (chatWindowEnd). */
+        const bool paused = m_replySerial != 0;
+        const std::deque<twitch::ChatLine>& lines = paused ? m_pausedLines : view.log->lines();
+        const std::size_t end = chatWindowEnd(lines);
+        const unsigned long long endSerial = end > 0 ? lines[end - 1].serial : 0;
         const bool badgesKnown = !view.badges->empty();
-        if (!m_chatSynced || view.log->revision() != m_chatRevision || badgesKnown != m_chatBadgesKnown) {
+        if (!m_chatSynced || view.log->revision() != m_chatRevision || badgesKnown != m_chatBadgesKnown ||
+            endSerial != m_chatEndSerial) {
             m_chatSynced = false;
-            syncChatUrls(badgesKnown);
+            syncChatUrls(badgesKnown, lines, end);
             m_chatRevision = view.log->revision();
             m_chatBadgesKnown = badgesKnown;
+            m_chatEndSerial = endSerial;
             m_chatSynced = true;
         }
 
-        /* m_chatUrls holds the newest lines, one entry each, in order; the
-         * kit gets the newest few of them. */
-        const std::deque<twitch::ChatLine>& lines = view.log->lines();
-        if (m_chatUrls.size() > lines.size()) return;
+        /* m_chatUrls holds the lines before `end`, one entry each, in order;
+         * the kit gets the last few of them. */
+        if (m_chatUrls.size() > end) return;
         const std::size_t n = std::min(m_chatUrls.size(),
                                        kitMode == EVO_HUI_TWITCH_CHAT_SIDE ? kChatLinesSide : kChatLinesOverlay);
         const std::size_t firstUrl = m_chatUrls.size() - n;
-        const std::size_t firstLine = lines.size() - n;
+        const std::size_t firstLine = end - n;
 
         std::size_t segmentTotal = 0, badgeTotal = 0;
         for (std::size_t k = 0; k < n; ++k) {
@@ -1090,6 +1262,7 @@ void PlayerScreen::renderChat(int kitMode, const std::string& title, const std::
             out.reply_to = line.replyTo.c_str();
             out.reply_login = line.replyToLogin.c_str();
             out.mention = u.mention ? 1 : 0;
+            out.selected = (m_replySerial != 0 && line.serial == m_replySerial) ? 1 : 0;
             for (std::size_t j = 0; j < line.segments.size(); ++j) {
                 evo_hui_twitch_chat_segment_t& o = m_chatSegments[seg++];
                 o.emote = (j < u.emotes.size() && !u.emotes[j].empty()) ? 1 : 0;
@@ -1142,6 +1315,7 @@ void PlayerScreen::renderChat(int kitMode, const std::string& title, const std::
             p.video_h = static_cast<float>(vh) * sy;
         }
         p.channel = m_chatChannel.c_str();
+        p.paused = paused ? 1 : 0;
         p.lines = n ? m_chatLines.data() : nullptr;
         p.line_count = static_cast<int>(n);
         switch (evo_twitch::settings().chatTextSize) {

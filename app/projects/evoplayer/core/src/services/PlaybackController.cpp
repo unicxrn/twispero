@@ -649,6 +649,7 @@ void PlaybackController::stopPlayback() {
     first_audio_pts_seconds = -1.0;
     first_video_pts_seconds = -1.0;
     audio_seek_discard_until = -1.0;
+    evo_audio_out_reset_clock(1);
 
     /* Don't let the next file's scrub previews reuse this file's demuxer. */
     prospero_thumbnail_close_context();
@@ -717,8 +718,11 @@ bool PlaybackController::startPlaybackSource(const PlaybackSource& source,
         /* evo_stream_io_open recorded why (wrong link, refused login, dead
          * server, damaged file, a playlist where a stream belongs). */
         char why[256];
-        toast_error(source.isProvider() ? "Couldn't open the stream" : "Couldn't open the file",
-                    evo_error_take(why, sizeof why) ? why : nullptr);
+        const char* reason = evo_error_take(why, sizeof why) ? why : nullptr;
+        if (source.quiet)
+            evo_boot_log("open: quiet start failed: %s", reason ? reason : "no reason given");
+        else
+            toast_error(source.isProvider() ? "Couldn't open the stream" : "Couldn't open the file", reason);
         return false;
     }
 
@@ -803,9 +807,10 @@ bool PlaybackController::startPlaybackSource(const PlaybackSource& source,
             evo_stream_io_close(m_streamIo);
             m_streamIo = nullptr;
             m_playbackFsm.postEvent(PlaybackEvent::Fail);
-            toast_error("Couldn't play this", probe_timed_out ? "Reading it took too long"
-                                              : no_streams    ? "The server sent nothing playable"
-                                                              : "No video or audio found in it");
+            if (!source.quiet)
+                toast_error("Couldn't play this", probe_timed_out ? "Reading it took too long"
+                                                  : no_streams    ? "The server sent nothing playable"
+                                                                  : "No video or audio found in it");
             return false;
         }
 
@@ -1182,7 +1187,7 @@ bool PlaybackController::startPlaybackSource(const PlaybackSource& source,
                                                  2 /* S16_8CH */);
                         if (handle >= 1) {
                             evo_audio_channels = 8;
-                        } else {
+                        } else if (!source.quiet) {
                             toast_tech("Audio", "Surround port refused, falling back to stereo");
                         }
                     }
@@ -1199,7 +1204,7 @@ bool PlaybackController::startPlaybackSource(const PlaybackSource& source,
                     evo_boot_log("audio: source %dch -> port %dch handle=%d",
                                  chCount, evo_audio_channels, handle);
 
-                    if (audio_handle < 1) {
+                    if (audio_handle < 1 && !source.quiet) {
                         toast_error("No sound", "The PS5's audio output didn't start");
                     }
 
@@ -1211,6 +1216,7 @@ bool PlaybackController::startPlaybackSource(const PlaybackSource& source,
                     audio_queue_write = 0;
                     audio_queue_count = 0;
                     audio_accum_pos = 0;
+                    evo_audio_out_reset_clock(1);
 
                     prospero_audio_resampler_reset();
 

@@ -267,7 +267,7 @@ std::vector<FollowedChannel> HelixClient::followedChannels(const std::string& us
 }
 
 SendResult HelixClient::sendChat(const std::string& broadcasterId, const std::string& senderId,
-                                 const std::string& message) {
+                                 const std::string& message, const std::string& replyParentId) {
   HttpRequest req;
   req.method = "POST";
   req.url = std::string(kHelixUrl) + "/chat/messages";
@@ -275,11 +275,13 @@ SendResult HelixClient::sendChat(const std::string& broadcasterId, const std::st
                  {"Client-Id", clientId_},
                  {"Content-Type", "application/json"}};
   // error_handler_t::replace: invalid UTF-8 in console-typed text can never
-  // throw here (same defensive choice as gql.cpp's query body).
-  req.body = nlohmann::json{{"broadcaster_id", broadcasterId},
-                            {"sender_id", senderId},
-                            {"message", message}}
-                 .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+  // throw here (same defensive choice as gql.cpp's query body). An empty
+  // reply id is left out: Twitch treats a present empty parent as a bad reply.
+  nlohmann::json payload{{"broadcaster_id", broadcasterId},
+                         {"sender_id", senderId},
+                         {"message", message}};
+  if (!replyParentId.empty()) payload["reply_parent_message_id"] = replyParentId;
+  req.body = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
   HttpResponse res = http_.send(req);
   checkStatus(res, "send chat");
